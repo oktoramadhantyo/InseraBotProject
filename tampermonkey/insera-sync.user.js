@@ -88,10 +88,7 @@
     var btn = document.createElement("button");
     btn.id = "binsera-btn";
     btn.textContent = "🔄 Sync ke Sheets";
-    btn.style.cssText =
-      "position:fixed;bottom:20px;right:20px;z-index:99999;padding:12px 24px;" +
-      "background:#2e7d32;color:#fff;border:none;border-radius:8px;cursor:pointer;" +
-      "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.3);min-width:180px;";
+    btn.style.cssText = TOMBOL_BASE + "bottom:20px;";
     btn.addEventListener("click", function () { syncSekarang(false); });
     document.body.appendChild(btn);
     console.log("[BotInsera] Tombol Sync dipasang.");
@@ -100,11 +97,12 @@
     buatToggleAutoRefresh();
   }
 
-  // Shared style agar semua tombol sama besar
+  // Shared style agar semua tombol sama besar persis
   var TOMBOL_BASE =
     "position:fixed;right:20px;z-index:99998;padding:12px 24px;" +
     "color:#fff;border:none;border-radius:8px;cursor:pointer;" +
-    "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);min-width:180px;";
+    "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);" +
+    "width:220px;box-sizing:border-box;text-align:center;";
 
   function buatToggleAuto() {
     if (document.getElementById("binsera-auto-btn")) return;

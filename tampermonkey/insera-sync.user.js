@@ -102,7 +102,7 @@
     "position:fixed;right:20px;z-index:99998;padding:12px 24px;" +
     "color:#fff;border:none;border-radius:8px;cursor:pointer;" +
     "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);" +
-    "width:220px;box-sizing:border-box;text-align:center;";
+    "width:170px;box-sizing:border-box;text-align:center;";
 
   function buatToggleAuto() {
     if (document.getElementById("binsera-auto-btn")) return;
@@ -111,7 +111,7 @@
     var a = document.createElement("button");
     a.id = "binsera-auto-btn";
     updateTeksAuto(a);
-    a.style.cssText = TOMBOL_BASE + "bottom:64px;";
+    a.style.cssText = TOMBOL_BASE + "bottom:78px;";
     a.addEventListener("click", toggleAuto);
     document.body.appendChild(a);
   }
@@ -165,7 +165,7 @@
     var r = document.createElement("button");
     r.id = "binsera-refresh-btn";
     updateTeksRefresh(r);
-    r.style.cssText = TOMBOL_BASE + "bottom:108px;";
+    r.style.cssText = TOMBOL_BASE + "bottom:136px;";
     r.addEventListener("click", toggleAutoRefresh);
     document.body.appendChild(r);
   }

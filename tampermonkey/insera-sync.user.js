@@ -34,12 +34,18 @@
   var AUTO_REFRESH_DETIK = 60;
   // ============================================================
 
-  var autoAktif = true;         // state toggle auto-sync (default ON)
-  var autoTimer = null;         // handle setInterval auto-sync
-  var autoRefreshAktif = false; // state toggle auto-refresh (default OFF)
-  var autoRefreshTimer = null;  // handle setInterval auto-refresh
-
   var PAKAI_GM = (typeof GM_xmlhttpRequest !== "undefined");
+
+  // State toggle disimpan di localStorage agar persist saat auto-refresh reload.
+  var AUTO_KEY = "binsera_auto_aktif";
+  var REFRESH_KEY = "binsera_auto_refresh_aktif";
+
+  var autoAktif = localStorage.getItem(AUTO_KEY) === null
+    ? true
+    : localStorage.getItem(AUTO_KEY) === "1";
+  var autoTimer = null;         // handle setInterval auto-sync
+  var autoRefreshAktif = localStorage.getItem(REFRESH_KEY) === "1";
+  var autoRefreshTimer = null;  // handle setInterval auto-refresh
 
   function log(msg) {
     console.log("[BotInsera]", msg);
@@ -121,8 +127,7 @@
 
   function toggleAuto() {
     autoAktif = !autoAktif;
-    var a = document.getElementById("binsera-auto-btn");
-    if (a) updateTeksAuto(a);
+    localStorage.setItem(AUTO_KEY, autoAktif ? "1" : "0");
     if (autoAktif) {
       mulaiAuto();
       log("Auto-sync DIAKTIFKAN (interval " + AUTO_SYNC_DETIK + " detik).");
@@ -130,6 +135,8 @@
       if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
       log("Auto-sync DIMATIKAN.");
     }
+    var a = document.getElementById("binsera-auto-btn");
+    if (a) updateTeksAuto(a);
   }
 
   function mulaiAuto() {
@@ -174,8 +181,7 @@
 
   function toggleAutoRefresh() {
     autoRefreshAktif = !autoRefreshAktif;
-    var r = document.getElementById("binsera-refresh-btn");
-    if (r) updateTeksRefresh(r);
+    localStorage.setItem(REFRESH_KEY, autoRefreshAktif ? "1" : "0");
     if (autoRefreshAktif) {
       mulaiAutoRefresh();
       log("Auto-refresh DIAKTIFKAN (interval " + AUTO_REFRESH_DETIK + " detik).");
@@ -183,6 +189,8 @@
       if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
       log("Auto-refresh DIMATIKAN.");
     }
+    var r = document.getElementById("binsera-refresh-btn");
+    if (r) updateTeksRefresh(r);
   }
 
   function mulaiAutoRefresh() {
@@ -696,15 +704,18 @@
     buatTombol();
     if (document.getElementById("binsera-btn")) {
       mulaiAuto();
+      if (autoRefreshAktif) mulaiAutoRefresh();
       return null;
     }
-    // body belum ada → coba lagi beberapa saat
     var kali = 0;
     var timer = setInterval(function () {
       buatTombol();
       kali++;
       if (document.getElementById("binsera-btn") || kali > 50) {
-        if (document.getElementById("binsera-btn")) mulaiAuto();
+        if (document.getElementById("binsera-btn")) {
+          mulaiAuto();
+          if (autoRefreshAktif) mulaiAutoRefresh();
+        }
         clearInterval(timer);
       }
     }, 300);

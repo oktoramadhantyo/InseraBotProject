@@ -99,7 +99,8 @@
 
   // Shared style agar semua tombol sama besar persis
   var TOMBOL_BASE =
-    "position:fixed;right:20px;z-index:99998;padding:12px 24px;" +
+    "position:fixed;right:20px;z-index:99998;padding:0 24px;height:44px;display:flex;" +
+    "align-items:center;justify-content:center;" +
     "color:#fff;border:none;border-radius:8px;cursor:pointer;" +
     "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);" +
     "width:170px;box-sizing:border-box;text-align:center;";
@@ -118,8 +119,8 @@
 
   function updateTeksAuto(el) {
     el.textContent = autoAktif
-      ? "⏱ Auto Sync " + AUTO_SYNC_DETIK + "d: ON"
-      : "⏱ Auto Sync " + AUTO_SYNC_DETIK + "d: OFF";
+      ? "⏱ Auto Sync: ON"
+      : "⏱ Auto Sync: OFF";
     el.style.background = autoAktif ? "#2e7d32" : "#c62828";
   }
 
@@ -172,8 +173,8 @@
 
   function updateTeksRefresh(el) {
     el.textContent = autoRefreshAktif
-      ? "🔁 Auto Refresh " + AUTO_REFRESH_DETIK + "d: ON"
-      : "🔁 Auto Refresh " + AUTO_REFRESH_DETIK + "d: OFF";
+      ? "🔁 Auto Refresh: ON"
+      : "🔁 Auto Refresh: OFF";
     el.style.background = autoRefreshAktif ? "#2e7d32" : "#c62828";
   }
 

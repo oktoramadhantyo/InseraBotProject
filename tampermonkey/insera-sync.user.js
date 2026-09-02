@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BotInsera - Sync Tiket Insera ke Google Sheets
 // @namespace    http://tampermonkey.net/
-// @version      1.3.0
+// @version      1.4.0
 // @description  Baca seluruh baris tabel ALL TICKET LIST Insera lalu kirim otomatis ke Google Apps Script (tab copas tket).
 // @author       diana
 // @match        *://*oss-incident.telkom.co.id/*
@@ -27,13 +27,17 @@
   // kolom INCIDENT dideteksi otomatis dari data (pola INCxxx...).
   // Nilai ini hanya cadangan/fallback.
   var COL_INCIDENT = 0;
-  // Auto-sync otomatis tiap N menit (halaman ALL TICKET LIST harus tetap terbuka).
+  // Auto-sync otomatis tiap N detik (halaman ALL TICKET LIST harus tetap terbuka).
   // 0 = nonaktifkan auto-sync (hanya manual via tombol).
-  var AUTO_SYNC_MENIT = 5;
+  var AUTO_SYNC_DETIK = 60;
+  // Auto-refresh halaman tiap N detik (untuk munculkan tiket baru).
+  var AUTO_REFRESH_DETIK = 60;
   // ============================================================
 
-  var autoAktif = true;       // state toggle auto-sync (default ON)
-  var autoTimer = null;       // handle setInterval auto-sync
+  var autoAktif = true;         // state toggle auto-sync (default ON)
+  var autoTimer = null;         // handle setInterval auto-sync
+  var autoRefreshAktif = false; // state toggle auto-refresh (default OFF)
+  var autoRefreshTimer = null;  // handle setInterval auto-refresh
 
   var PAKAI_GM = (typeof GM_xmlhttpRequest !== "undefined");
 
@@ -71,7 +75,6 @@
     if (document.getElementById("binsera-btn")) return;
 
     if (!document.body) {
-      // body belum siap, coba lagi nanti
       setTimeout(buatTombol, 200);
       return;
     }
@@ -80,16 +83,22 @@
     btn.id = "binsera-btn";
     btn.textContent = "🔄 Sync ke Sheets";
     btn.style.cssText =
-      "position:fixed;bottom:20px;right:20px;z-index:99999;padding:12px 16px;" +
+      "position:fixed;bottom:20px;right:20px;z-index:99999;padding:12px 24px;" +
       "background:#2e7d32;color:#fff;border:none;border-radius:8px;cursor:pointer;" +
-      "font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.3);";
+      "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.3);min-width:180px;";
     btn.addEventListener("click", function () { syncSekarang(false); });
     document.body.appendChild(btn);
     console.log("[BotInsera] Tombol Sync dipasang.");
 
-    // Tombol toggle Auto-sync (kecil, di atas tombol utama)
     buatToggleAuto();
+    buatToggleAutoRefresh();
   }
+
+  // Shared style agar semua tombol sama besar
+  var TOMBOL_BASE =
+    "position:fixed;right:20px;z-index:99998;padding:12px 24px;" +
+    "color:#fff;border:none;border-radius:8px;cursor:pointer;" +
+    "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);min-width:180px;";
 
   function buatToggleAuto() {
     if (document.getElementById("binsera-auto-btn")) return;
@@ -97,31 +106,38 @@
 
     var a = document.createElement("button");
     a.id = "binsera-auto-btn";
-    a.textContent = autoAktif ? "⏱ Auto " + AUTO_SYNC_MENIT + " mnt: ON" : "⏱ Auto " + AUTO_SYNC_MENIT + " mnt: OFF";
-    a.style.cssText =
-      "position:fixed;bottom:64px;right:20px;z-index:99998;padding:6px 10px;" +
-      "background:#37474f;color:#fff;border:none;border-radius:6px;cursor:pointer;" +
-      "font-size:12px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);";
+    updateTeksAuto(a);
+    a.style.cssText = TOMBOL_BASE + "bottom:64px;";
     a.addEventListener("click", toggleAuto);
     document.body.appendChild(a);
+  }
+
+  function updateTeksAuto(el) {
+    el.textContent = autoAktif
+      ? "⏱ Auto Sync " + AUTO_SYNC_DETIK + "d: ON"
+      : "⏱ Auto Sync " + AUTO_SYNC_DETIK + "d: OFF";
+    el.style.background = autoAktif ? "#2e7d32" : "#c62828";
   }
 
   function toggleAuto() {
     autoAktif = !autoAktif;
     var a = document.getElementById("binsera-auto-btn");
-    if (a) {
-      a.textContent = autoAktif ? "⏱ Auto " + AUTO_SYNC_MENIT + " mnt: ON" : "⏱ Auto " + AUTO_SYNC_MENIT + " mnt: OFF";
+    if (a) updateTeksAuto(a);
+    if (autoAktif) {
+      mulaiAuto();
+      log("Auto-sync DIAKTIFKAN (interval " + AUTO_SYNC_DETIK + " detik).");
+    } else {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+      log("Auto-sync DIMATIKAN.");
     }
-    log("Auto-sync " + (autoAktif ? "DIAKTIFKAN" : "DIMATIKAN") +
-        " (interval " + AUTO_SYNC_MENIT + " menit).");
   }
 
   function mulaiAuto() {
-    if (!AUTO_SYNC_MENIT || AUTO_SYNC_MENIT <= 0) {
-      log("Auto-sync tidak aktif (AUTO_SYNC_MENIT = 0).");
+    if (!AUTO_SYNC_DETIK || AUTO_SYNC_DETIK <= 0) {
+      log("Auto-sync tidak aktif (AUTO_SYNC_DETIK = 0).");
       return;
     }
-    if (autoTimer) return; // sudah berjalan
+    if (autoTimer) return;
     autoTimer = setInterval(function () {
       if (!autoAktif) return;
       if (location.href.indexOf("allTicketList") === -1) {
@@ -129,11 +145,59 @@
         return;
       }
       var btn = document.getElementById("binsera-btn");
-      if (btn && btn.disabled) return; // masih sync, lewati
-      log("Auto-sync (interval " + AUTO_SYNC_MENIT + " mnt) dijalankan...");
+      if (btn && btn.disabled) return;
+      log("Auto-sync (interval " + AUTO_SYNC_DETIK + " detik) dijalankan...");
       syncSekarang(true);
-    }, AUTO_SYNC_MENIT * 60 * 1000);
-    log("Auto-sync aktif: setiap " + AUTO_SYNC_MENIT + " menit.");
+    }, AUTO_SYNC_DETIK * 1000);
+    log("Auto-sync aktif: setiap " + AUTO_SYNC_DETIK + " detik.");
+  }
+
+  // ---- Auto-Refresh ----
+  function buatToggleAutoRefresh() {
+    if (document.getElementById("binsera-refresh-btn")) return;
+    if (!document.body) { setTimeout(buatToggleAutoRefresh, 200); return; }
+
+    var r = document.createElement("button");
+    r.id = "binsera-refresh-btn";
+    updateTeksRefresh(r);
+    r.style.cssText = TOMBOL_BASE + "bottom:108px;";
+    r.addEventListener("click", toggleAutoRefresh);
+    document.body.appendChild(r);
+  }
+
+  function updateTeksRefresh(el) {
+    el.textContent = autoRefreshAktif
+      ? "🔁 Auto Refresh " + AUTO_REFRESH_DETIK + "d: ON"
+      : "🔁 Auto Refresh " + AUTO_REFRESH_DETIK + "d: OFF";
+    el.style.background = autoRefreshAktif ? "#2e7d32" : "#c62828";
+  }
+
+  function toggleAutoRefresh() {
+    autoRefreshAktif = !autoRefreshAktif;
+    var r = document.getElementById("binsera-refresh-btn");
+    if (r) updateTeksRefresh(r);
+    if (autoRefreshAktif) {
+      mulaiAutoRefresh();
+      log("Auto-refresh DIAKTIFKAN (interval " + AUTO_REFRESH_DETIK + " detik).");
+    } else {
+      if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+      log("Auto-refresh DIMATIKAN.");
+    }
+  }
+
+  function mulaiAutoRefresh() {
+    if (!AUTO_REFRESH_DETIK || AUTO_REFRESH_DETIK <= 0) return;
+    if (autoRefreshTimer) return;
+    autoRefreshTimer = setInterval(function () {
+      if (!autoRefreshAktif) return;
+      if (location.href.indexOf("allTicketList") === -1) {
+        log("Lewati auto-refresh: halaman bukan ALL TICKET LIST.");
+        return;
+      }
+      log("Auto-refresh halaman (interval " + AUTO_REFRESH_DETIK + " detik)...");
+      location.reload();
+    }, AUTO_REFRESH_DETIK * 1000);
+    log("Auto-refresh aktif: setiap " + AUTO_REFRESH_DETIK + " detik.");
   }
 
   // Mencari dokumen yang berisi tabel. Mendukung tabel di dalam iframe (same-origin).
@@ -487,7 +551,6 @@
 
   function syncSekarang(otomatis) {
     var btn = document.getElementById("binsera-btn");
-    var teksAsli = btn.textContent;
     btn.textContent = "⏳ Sync...";
     btn.disabled = true;
 
@@ -529,12 +592,12 @@
             toast("Tidak ada baris data terbaca.\n\nHASIL DIAGNOSA:\n" + detailStruktur +
                   "\n\nSampaikan isi ini ke opencode.", 6000);
           }
-          btn.textContent = teksAsli;
+          btn.textContent = "🔄 Sync ke Sheets";
           btn.disabled = false;
         }
       }).catch(function (e) {
         log("Error baca halaman: " + e);
-        btn.textContent = teksAsli;
+        btn.textContent = "🔄 Sync ke Sheets";
         btn.disabled = false;
         if (!otomatis) toast("Gagal baca halaman: " + e, 4000);
       });
@@ -589,7 +652,7 @@
           toast("Respon tidak dikenal: " + JSON.stringify(res).slice(0, 200), 4000);
         }
       }
-      btn.textContent = teksAsli;
+      btn.textContent = "🔄 Sync ke Sheets";
       btn.disabled = false;
     }
   }

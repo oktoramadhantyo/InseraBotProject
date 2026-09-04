@@ -136,7 +136,7 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
   for (var i = 0; i < rowsLama.length; i++) {
     var r = rowsLama[i];
     if (r && r[colIncident] && String(r[colIncident]).trim() !== "") {
-      peta[String(r[colIncident]).trim()] = i;
+      peta[String(r[colIncident]).trim().toUpperCase()] = i;
     }
   }
 
@@ -150,7 +150,7 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     if (!row || !Array.isArray(row)) continue;
     if (!row.some(function (v) { return String(v).trim() !== ""; })) continue;
 
-    var inc = row[colIncident] !== undefined ? String(row[colIncident]).trim() : "";
+    var inc = row[colIncident] !== undefined ? String(row[colIncident]).trim().toUpperCase() : "";
     if (inc === "") continue;
 
     if (peta[inc] !== undefined) {
@@ -198,19 +198,6 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     if (blok.length > 0) {
       ws.getRange(blokMulai, 1, blok.length, lebarUpdate).setValues(blok);
     }
-
-    // Warnai sel INCIDENT baris yang di-update (1 warna seragam per sync).
-    var barisIncident = pasangan.map(function (e) { return e.row; });
-    var wMulai = barisIncident[0];
-    for (var w = 1; w < barisIncident.length; w++) {
-      if (barisIncident[w] > barisIncident[w - 1] + 1) {
-        ws.getRange(wMulai, colIncident + 1, barisIncident[w - 1] - wMulai + 1, 1)
-          .setBackground(warnaBatch);
-        wMulai = barisIncident[w];
-      }
-    }
-    ws.getRange(wMulai, colIncident + 1, barisIncident[barisIncident.length - 1] - wMulai + 1, 1)
-      .setBackground(warnaBatch);
   }
 
   // (4) Tambah baris BARU di bawah data terakhir.
@@ -224,7 +211,7 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     var targetRange = ws.getRange(firstEmpty, 1, barisBaru.length, Math.max(nCols, 1));
     targetRange.setValues(barisBaru);
 
-    // Warnai sel INCIDENT baris baru (warna yang SAMA dengan update di sync ini).
+    // Warnai sel INCIDENT baris BARU (warna interval sekarang; data lama warna tetap).
     var incCol = colIncident + 1;
     ws.getRange(firstEmpty, incCol, barisBaru.length, 1).setBackground(warnaBatch);
   }
@@ -235,13 +222,13 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     Object.keys(barisUpdate).forEach(function (k) { incDiInsera[k] = true; });
     for (var b2 = 0; b2 < barisBaru.length; b2++) {
       var incb = barisBaru[b2] && barisBaru[b2][colIncident] !== undefined
-        ? String(barisBaru[b2][colIncident]).trim() : "";
+        ? String(barisBaru[b2][colIncident]).trim().toUpperCase() : "";
       if (incb !== "") incDiInsera[incb] = true;
     }
     var rowsHapus = [];
     for (var li = 0; li < rowsLama.length; li++) {
       var rl = rowsLama[li];
-      var incLama = (rl && rl[colIncident] !== undefined) ? String(rl[colIncident]).trim() : "";
+      var incLama = (rl && rl[colIncident] !== undefined) ? String(rl[colIncident]).trim().toUpperCase() : "";
       if (incLama === "") continue;
       if (incDiInsera[incLama]) continue;
       rowsHapus.push(li + 2);

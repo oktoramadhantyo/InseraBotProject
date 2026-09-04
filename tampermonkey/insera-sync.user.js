@@ -233,7 +233,8 @@
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
       for (var c = 0; c < row.length; c++) {
-        if (/^INC\d+$/i.test(row[c])) {
+        var val = String(row[c]).trim();
+        if (/^INC[-_\s]?[0-9A-Za-z]+$/i.test(val)) {
           return c;
         }
       }

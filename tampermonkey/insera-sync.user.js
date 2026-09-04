@@ -460,14 +460,22 @@
     if (pb.totalItems > 0) {
       totalHalaman = Math.ceil(pb.totalItems / pb.pageSize);
     } else {
-      // fallback: cek link pagination (title "Go to page N").
-      var pageLinks = document.querySelectorAll('a[title^="Go to page"]');
-      var totalDariLink = 0;
-      pageLinks.forEach(function (a) {
-        var m = /Go to page (\d+)/.exec(a.getAttribute("title") || "");
-        if (m) totalDariLink = Math.max(totalDariLink, parseInt(m[1], 10));
-      });
-      if (totalDariLink > 0) totalHalaman = totalDariLink;
+      // pagebanner tidak terbaca. Kalau baris di halaman aktif lebih sedikit dari
+      // ukuran halaman, pasti tidak ada halaman berikutnya (data < 1 halaman penuh).
+      // Dengan begitu `lengkap` bisa true dan baris yang tak ada di Insera bisa dihapus.
+      var barisAktif = (hasilAktif.rows && hasilAktif.rows.length) || 0;
+      if (barisAktif < pb.pageSize) {
+        totalHalaman = 1;
+      } else {
+        // fallback: cek link pagination (title "Go to page N").
+        var pageLinks = document.querySelectorAll('a[title^="Go to page"]');
+        var totalDariLink = 0;
+        pageLinks.forEach(function (a) {
+          var m = /Go to page (\d+)/.exec(a.getAttribute("title") || "");
+          if (m) totalDariLink = Math.max(totalDariLink, parseInt(m[1], 10));
+        });
+        if (totalDariLink > 0) totalHalaman = totalDariLink;
+      }
     }
     var halamanTerbaca = 1;
 

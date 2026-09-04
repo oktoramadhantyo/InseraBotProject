@@ -229,7 +229,12 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     for (var li = 0; li < rowsLama.length; li++) {
       var rl = rowsLama[li];
       var incLama = (rl && rl[colIncident] !== undefined) ? String(rl[colIncident]).trim().toUpperCase() : "";
-      if (incLama === "") continue;
+      // Baris dengan INCIDENT kosong = bukan tiket Insera → ikut dihapus
+      // (selaras aturan: yang tidak ada di Insera tidak boleh ada di sheet).
+      if (incLama === "") {
+        rowsHapus.push(li + 2);
+        continue;
+      }
       if (incDiInsera[incLama]) continue;
       rowsHapus.push(li + 2);
     }

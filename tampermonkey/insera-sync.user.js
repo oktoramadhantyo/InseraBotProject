@@ -88,7 +88,7 @@
     var btn = document.createElement("button");
     btn.id = "binsera-btn";
     btn.textContent = "🔄 Sync ke Sheets";
-    btn.style.cssText = TOMBOL_BASE + "bottom:20px;";
+    btn.style.cssText = TOMBOL_BASE + "bottom:20px;background:#1565c0;";
     btn.addEventListener("click", function () { syncSekarang(false); });
     document.body.appendChild(btn);
     console.log("[BotInsera] Tombol Sync dipasang.");
@@ -103,7 +103,8 @@
     "align-items:center;justify-content:center;" +
     "color:#fff;border:none;border-radius:8px;cursor:pointer;" +
     "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);" +
-    "width:170px;box-sizing:border-box;text-align:center;";
+    "width:170px;box-sizing:border-box;text-align:center;" +
+    "opacity:1;background:#1565c0;";
 
   function buatToggleAuto() {
     if (document.getElementById("binsera-auto-btn")) return;
@@ -112,7 +113,7 @@
     var a = document.createElement("button");
     a.id = "binsera-auto-btn";
     updateTeksAuto(a);
-    a.style.cssText = TOMBOL_BASE + "bottom:78px;";
+    a.style.cssText = TOMBOL_BASE + "bottom:68px;";
     a.addEventListener("click", toggleAuto);
     document.body.appendChild(a);
   }
@@ -166,7 +167,7 @@
     var r = document.createElement("button");
     r.id = "binsera-refresh-btn";
     updateTeksRefresh(r);
-    r.style.cssText = TOMBOL_BASE + "bottom:136px;";
+    r.style.cssText = TOMBOL_BASE + "bottom:116px;";
     r.addEventListener("click", toggleAutoRefresh);
     document.body.appendChild(r);
   }

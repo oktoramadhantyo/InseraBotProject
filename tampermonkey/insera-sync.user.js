@@ -44,7 +44,9 @@
     ? true
     : localStorage.getItem(AUTO_KEY) === "1";
   var autoTimer = null;         // handle setInterval auto-sync
-  var autoRefreshAktif = localStorage.getItem(REFRESH_KEY) === "1";
+  var autoRefreshAktif = localStorage.getItem(REFRESH_KEY) === null
+    ? true
+    : localStorage.getItem(REFRESH_KEY) === "1";
   var autoRefreshTimer = null;  // handle setInterval auto-refresh
 
   function log(msg) {
@@ -112,8 +114,8 @@
 
     var a = document.createElement("button");
     a.id = "binsera-auto-btn";
-    updateTeksAuto(a);
     a.style.cssText = TOMBOL_BASE + "bottom:68px;";
+    updateTeksAuto(a);
     a.addEventListener("click", toggleAuto);
     document.body.appendChild(a);
   }
@@ -166,8 +168,8 @@
 
     var r = document.createElement("button");
     r.id = "binsera-refresh-btn";
-    updateTeksRefresh(r);
     r.style.cssText = TOMBOL_BASE + "bottom:116px;";
+    updateTeksRefresh(r);
     r.addEventListener("click", toggleAutoRefresh);
     document.body.appendChild(r);
   }

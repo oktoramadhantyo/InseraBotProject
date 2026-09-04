@@ -584,10 +584,37 @@
     }
   }
 
+  // Menunggu sampai tabel benar-benar ter-render (berisi minimal satu baris data)
+  // sebelum dibaca. Penting PASCА reload: Insera butuh waktu mengisi tabel (AJAX),
+  // dan membaca lebih awal sama saja dengan data kosong/duplikat → ke-hapus tertunda.
+  // Dipakai oleh tombol "🔄 Sync" (jalan sekali) dan Auto-Sync (yang sama, interval tetap).
+  function tungguTabelSiap(maksDetik, onSiap, onGagal) {
+    var max = (maksDetik || 20) * 10; // tiap 100ms
+    var n = 0;
+    var cek = function () {
+      var r = bacaSemuaBaris();
+      if (r.rows && r.rows.length > 0) {
+        onSiap();
+        return;
+      }
+      n++;
+      if (n >= max) {
+        onGagal();
+        return;
+      }
+      setTimeout(cek, 100);
+    };
+    cek();
+  }
+
   function syncSekarang(otomatis) {
     var btn = document.getElementById("binsera-btn");
     btn.textContent = "⏳ Sync...";
     btn.disabled = true;
+
+    if (!otomatis) {
+      toast("Memulai sinkronisasi...\nMenunggu tabel dimuat...", 1500);
+    }
 
     // Diagnosa struktur tabel untuk memudahkan kita memperbaiki
     var detailStruktur = debugStruktur();
@@ -600,6 +627,24 @@
     var kolomPerBaris = 0;
     var halamanTerbaca = 0;
 
+    // Pastikan tabel sudah render sebelum membaca (terutama setelah Auto Refresh),
+    // supaya data yang dikirim ke sheet lengkap & akurat.
+    tungguTabelSiap(20, mulaiBaca, gagalSiap);
+
+    function gagalSiap() {
+      if (otomatis) {
+        log("Auto-sync: tabel belum berisi data sampai batas waktu (mungkin loading lama).");
+      } else {
+        toast("Tabel belum berisi data (halaman masih loading?).\nCoba lagi beberapa saat lagi.", 4000);
+      }
+      btn.textContent = "🔄 Sync ke Sheets";
+      btn.disabled = false;
+    }
+
+    function mulaiBaca() {
+      bacaDanLanjut();
+    }
+
     var bacaDanLanjut = function () {
       bacaSemuaHalaman().then(function (hasil) {
         var rows = hasil.rows;
@@ -610,6 +655,9 @@
           kolomPerBaris = rows[0].length;
           log("Baca " + rows.length + " baris (semua halaman), kolom INCIDENT di indeks " +
               hasil.colIncident + ", jml kolom/baris " + kolomPerBaris);
+          if (!otomatis) {
+            toast("✓ Tabel ter-baca: " + rows.length + " baris.\nMengirim ke spreadsheet...", 2000);
+          }
           // "lengkap" = semua halaman pagination berhasil dibaca (tidak ada fetch gagal).
           // Kalau belum lengkap, backend DILARANG menghapus data lama (pengaman).
           var lengkap = (hasil.lengkap !== undefined)
@@ -623,6 +671,9 @@
         }
         percobaan++;
         if (percobaan < 5) {
+          if (!otomatis) {
+            toast("Menunggu tabel dimuat... (" + percobaan + "/5)", 1000);
+          }
           log("Belum ada baris, coba lagi (" + percobaan + "/5)...");
           setTimeout(bacaDanLanjut, 600);
         } else {

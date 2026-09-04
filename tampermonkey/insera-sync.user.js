@@ -645,7 +645,7 @@
       bacaDanLanjut();
     }
 
-    var bacaDanLanjut = function () {
+    function bacaDanLanjut() {
       bacaSemuaHalaman().then(function (hasil) {
         var rows = hasil.rows;
         barisTerbaca = rows.length;
@@ -692,8 +692,9 @@
         btn.disabled = false;
         if (!otomatis) toast("Gagal baca halaman: " + e, 4000);
       });
-    };
-    bacaDanLanjut();
+    }
+    // `tungguTabelSiap` di atas yang memicu mulaiBaca() → bacaDanLanjut(),
+    // jadi tidak perlu dipanggil manual di sini (menghindari double-run saat tabel belum siap).
 
     function selesaiKlik(res, ok) {
       if (!ok) {

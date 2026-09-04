@@ -80,6 +80,8 @@ function doPost(e) {
     var rows = body.rows || [];
     var colIncident = (body.colIncident !== undefined) ? body.colIncident : 0;
     var lengkap = !!body.lengkap;
+    console.log("[BotInsera] doPost: rows=" + (rows && rows.length) +
+                " colIncident=" + colIncident + " lengkap=" + lengkap);
 
     if (rows.length === 0) {
       out.ok = true;
@@ -238,6 +240,10 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
       if (incDiInsera[incLama]) continue;
       rowsHapus.push(li + 2);
     }
+    console.log("[BotInsera] lengkap=" + lengkap +
+                " rowsLama=" + rowsLama.length +
+                " incDiInsera=" + Object.keys(incDiInsera).length +
+                " rowsHapus=" + rowsHapus.length);
     // Hapus dari bawah ke atas agar index tidak bergeser.
     for (var d = rowsHapus.length - 1; d >= 0; d--) {
       ws.deleteRow(rowsHapus[d]);

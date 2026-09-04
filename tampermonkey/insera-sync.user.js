@@ -505,10 +505,26 @@
       log("Total item " + pb.totalItems + " (pagebanner). Hanya 1 halaman / tidak ada pagination.");
     }
 
+    // Tentukan "lengkap" secara konservatif:
+    // Aturan utama: kalau baris unik yang terbaca KURANG dari ukuran 1 halaman penuh,
+    // berarti tidak ada halaman berikutnya → data lengkap (apapun totalItems yang tampil).
+    // Ini mencegah pagebanner/pagination yang menampilkan angka basi menjadikan lengkap=false.
+    var barisUnik = gabungan.length;
+    var lengkap = false;
+    if (pb.pageSize > 0 && barisUnik < pb.pageSize) {
+      lengkap = true;
+    } else if (pb.totalItems > 0) {
+      lengkap = (barisUnik >= pb.totalItems);
+    } else {
+      lengkap = (halamanTerbaca >= totalHalaman);
+    }
+    log("lengkap hasil hitung=" + lengkap + " (barisUnik=" + barisUnik +
+        " pageSize=" + pb.pageSize + " totalItems=" + pb.totalItems + ")");
+
     if (halamanTerbaca > 1) {
       console.log("[BotInsera] Selesai baca " + halamanTerbaca + " halaman, total " + gabungan.length + " baris.");
     }
-    return { rows: gabungan, colIncident: kolomInc, halamanTerbaca: halamanTerbaca, totalHalaman: totalHalaman };
+    return { rows: gabungan, colIncident: kolomInc, halamanTerbaca: halamanTerbaca, totalHalaman: totalHalaman, lengkap: lengkap };
   }
 
   function kirimKeAppsScript(rows, colIncident, lengkap, onSelesai) {
@@ -596,7 +612,12 @@
               hasil.colIncident + ", jml kolom/baris " + kolomPerBaris);
           // "lengkap" = semua halaman pagination berhasil dibaca (tidak ada fetch gagal).
           // Kalau belum lengkap, backend DILARANG menghapus data lama (pengaman).
-          var lengkap = (hasil.halamanTerbaca >= (hasil.totalHalaman || 1));
+          var lengkap = (hasil.lengkap !== undefined)
+            ? hasil.lengkap
+            : (hasil.halamanTerbaca >= (hasil.totalHalaman || 1));
+          log("lengkap=" + lengkap + " halamanTerbaca=" + hasil.halamanTerbaca +
+              " totalHalaman=" + (hasil.totalHalaman || 1) +
+              " colIncident=" + hasil.colIncident);
           kirimKeAppsScript(rows, hasil.colIncident, lengkap, selesaiKlik);
           return;
         }

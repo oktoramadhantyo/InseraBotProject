@@ -4,11 +4,11 @@
  * Bagian BACK-END (server) yang menerima data tiket dari userscript Tampermonkey
  * lalu menulis/update ke tab `copas tket` di spreadsheet ini.
  *
- * v2.0 - Diselaraskan dengan Tampermonkey v1.4.0
- * - Siklus warna berbasis WAKTU (60 detik), bukan per-batch
- * - Warna per-sync hanya SATU (tidak ganda)
- * - Cleanup warna cell kosong setelah data terhapus
- * - Yellow diganti ke #FFF9C4 (lebih visible)
+ * v2.1 - Diselaraskan dengan Tampermonkey v1.6.0 (one-cycle)
+ * - Warna 2 macam: HIJAU (baris baru) & KUNING (baris lama/update)
+ * - Hapus SEMUA baris INC kosong (bukan tiket Insera) saat lengkap=true
+ * - Dedupe INC dobel + hapus baris tak ada di Insera saat lengkap=true
+ * - Hapus baris per-chunk kontigu (lebih cepat)
  *
  * CARA DEPLOY:
  * 1. Buka spreadsheet target (yang punya tab `copas tket`).
@@ -25,38 +25,12 @@
 var ACCESS_TOKEN = "#Ez6KQZpzEYYXSeYWyZAGA7N";
 var TAB_TUJUAN = "copas tket";
 
-// ============ WARNA INTERVAL (TIME-BASED) ============
-// 4 warna pastel berputar tiap 60 detik (bukan per-batch).
-// Dipanggil SEKALI per sync, bukan dua kali.
-var WARNA_SIKLUS = ["#C8E6C9", "#FFCDD2", "#BBDEFB", "#FFF9C4"];
-var PROP_WARNA_IDX = "botinsera_warna_idx";
-var PROP_WARNA_TIME = "botinsera_warna_time";
-var WARNA_INTERVAL_DETIK = 60;
-
-/**
- * Mengembalikan warna siklus berdasarkan WAKTU (60 detik sekali ganti).
- * - Simpan timestamp terakhir pergantian warna di Script Properties.
- * - Kalau sudah lewat 60 detik, naikkan index & update timestamp.
- * - Kalau belum, pakai warna yang sama.
- * Dipanggil SEKALI per doPost (bukan per update/baru).
- */
-function warnaBerdasarkanWaktu() {
-  var props = PropertiesService.getScriptProperties();
-  var idx = parseInt(props.getProperty(PROP_WARNA_IDX), 10);
-  var lastTime = parseInt(props.getProperty(PROP_WARNA_TIME), 10);
-
-  if (isNaN(idx)) idx = 0;
-  if (isNaN(lastTime)) lastTime = 0;
-
-  var now = Math.floor(Date.now() / 1000);
-  if (now - lastTime >= WARNA_INTERVAL_DETIK) {
-    idx = (idx + 1) % WARNA_SIKLUS.length;
-    props.setProperty(PROP_WARNA_IDX, String(idx));
-    props.setProperty(PROP_WARNA_TIME, String(now));
-  }
-
-  return WARNA_SIKLUS[idx];
-}
+// ============ WARNA (2 macam) ============
+// HIJAU  = baris BARU (belum pernah ada di sheet / INC baru masuk sync ini).
+// KUNING = baris LAMA (sudah ada di sheet; terbawa / ter-update dari sync lalu).
+// Tidak perlu rotasi index & Script Properties — cukup 2 kondisi tetap.
+var WARNA_BARU  = "#4CAF50"; // hijau (baru)
+var WARNA_LAMA  = "#FFF59D"; // kuning lembut (lama, lebih visible)
 
 // ============ HANDLER ============
 
@@ -90,10 +64,12 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Ambil warna SEKALI berdasarkan waktu (60 detik interval)
-    var warnaBatch = warnaBerdasarkanWaktu();
+    // Warna: HIJAU = baru, KUNING = lama. Bedanya ditentukan tulisTiket.
+    var warnaBaru = WARNA_BARU;
+    var warnaLama = WARNA_LAMA;
+    console.log("[BotInsera] Warna: baru=" + warnaBaru + " lama=" + warnaLama);
 
-    var stat = tulisTiket(rows, colIncident, lengkap, warnaBatch);
+    var stat = tulisTiket(rows, colIncident, lengkap, warnaBaru, warnaLama);
     out.ok = true;
     out.baru = stat.baru;
     out.update = stat.update;
@@ -121,12 +97,12 @@ function doGet() {
  * Menulis tiket ke tab tujuan, hindari duplikat by INCIDENT.
  *
  * Perilaku:
- * - Tiket SUDAH ADA (by INCIDENT) → di-UPDATE di baris yang sama.
- * - Tiket BELUM ADA → di-append di baris kosong pertama.
- * - Sel INCIDENT diberi warna (1 warna per sync, time-based 60 detik).
- * - Baris terhapus → background color di-cleanup.
+ * - Tiket SUDAH ADA (by INCIDENT) → di-UPDATE di baris yang sama, sel INCIDENT = KUNING.
+ * - Tiket BELUM ADA → di-append, sel INCIDENT = HIJAU.
+ * - Saat lengkap: hapus SEMUA baris INC kosong + dedupe dobel INC + hapus baris tak ada di Insera.
+ * - Semua baris valid yang tersisa setelahnya = KUNING (lama).
  */
-function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
+function tulisTiket(rowsBaru, colIncident, lengkap, warnaBaru, warnaLama) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ws = ss.getSheetByName(TAB_TUJUAN);
 
@@ -164,7 +140,7 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     }
   }
 
-  // (3) UPDATE baris yang sudah ada (posisi tetap, isi disamakan Insera).
+  // (3) UPDATE baris yang sudah ada (posisi tetap, isi disamakan Insera) + warna KUNING.
   var incsUpdate = Object.keys(barisUpdate);
   if (incsUpdate.length > 0) {
     var maxColsUpdate = 0;
@@ -192,6 +168,8 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     for (var p = 0; p < pasangan.length; p++) {
       if (blok.length > 0 && pasangan[p].row !== blokMulai + blok.length) {
         ws.getRange(blokMulai, 1, blok.length, lebarUpdate).setValues(blok);
+        // Warnai sel INCIDENT baris UPDATE = KUNING (karena sudah lewat 1 interval).
+        ws.getRange(blokMulai, colIncident + 1, blok.length, 1).setBackground(warnaLama);
         blok = [];
         blokMulai = pasangan[p].row;
       }
@@ -199,10 +177,11 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     }
     if (blok.length > 0) {
       ws.getRange(blokMulai, 1, blok.length, lebarUpdate).setValues(blok);
+      ws.getRange(blokMulai, colIncident + 1, blok.length, 1).setBackground(warnaLama);
     }
   }
 
-  // (4) Tambah baris BARU di bawah data terakhir.
+  // (4) Tambah baris BARU di bawah data terakhir + warna HIJAU.
   if (barisBaru.length > 0) {
     var lastRow = Math.max(ws.getLastRow(), 1);
     var firstEmpty = lastRow + 1;
@@ -213,13 +192,13 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
     var targetRange = ws.getRange(firstEmpty, 1, barisBaru.length, Math.max(nCols, 1));
     targetRange.setValues(barisBaru);
 
-    // Warnai sel INCIDENT baris BARU (warna interval sekarang; data lama warna tetap).
-    var incCol = colIncident + 1;
-    ws.getRange(firstEmpty, incCol, barisBaru.length, 1).setBackground(warnaBatch);
+    // Warnai sel INCIDENT baris BARU = HIJAU.
+    ws.getRange(firstEmpty, colIncident + 1, barisBaru.length, 1).setBackground(warnaBaru);
   }
 
-  // (5) HAPUS baris yang sudah tidak ada di Insera (hanya jika "lengkap").
+  // (5) Bila lengkap: bersihkan baris INC kosong + dedupe dobel + hapus tak-ada-di-Insera.
   if (lengkap) {
+    // Set INC yang ADA di Insera (update + baru).
     var incDiInsera = {};
     Object.keys(barisUpdate).forEach(function (k) { incDiInsera[k] = true; });
     for (var b2 = 0; b2 < barisBaru.length; b2++) {
@@ -227,50 +206,86 @@ function tulisTiket(rowsBaru, colIncident, lengkap, warnaBatch) {
         ? String(barisBaru[b2][colIncident]).trim().toUpperCase() : "";
       if (incb !== "") incDiInsera[incb] = true;
     }
+
+    // (5a) Deteksi duplikat INC di sheet (baris > pertama) + baris INC kosong.
+    var terlihat = {};
     var rowsHapus = [];
     for (var li = 0; li < rowsLama.length; li++) {
       var rl = rowsLama[li];
       var incLama = (rl && rl[colIncident] !== undefined) ? String(rl[colIncident]).trim().toUpperCase() : "";
-      // Baris dengan INCIDENT kosong = bukan tiket Insera → ikut dihapus
-      // (selaras aturan: yang tidak ada di Insera tidak boleh ada di sheet).
+      // Baris INC KOSONG = bukan tiket Insera → selalu hapus (minimalisir data aneh).
       if (incLama === "") {
         rowsHapus.push(li + 2);
         continue;
       }
-      if (incDiInsera[incLama]) continue;
-      rowsHapus.push(li + 2);
+      // Duplikat INC (sudah pernah tampil) → hapus sisanya.
+      if (terlihat[incLama]) {
+        rowsHapus.push(li + 2);
+        continue;
+      }
+      terlihat[incLama] = true;
+      // INC tidak ada di Insera → hapus.
+      if (!incDiInsera[incLama]) {
+        rowsHapus.push(li + 2);
+      }
     }
     console.log("[BotInsera] lengkap=" + lengkap +
                 " rowsLama=" + rowsLama.length +
                 " incDiInsera=" + Object.keys(incDiInsera).length +
-                " rowsHapus=" + rowsHapus.length);
-    // Hapus dari bawah ke atas agar index tidak bergeser.
-    for (var d = rowsHapus.length - 1; d >= 0; d--) {
-      ws.deleteRow(rowsHapus[d]);
-    }
-    stat.hapus = rowsHapus.length;
-  }
+                " rowsHapus(kosong+dupd+beda)=" + rowsHapus.length);
 
-  // (6) CLEANUP: bersihkan background color di cell kosong (safety net).
-  //     Scan semua baris data — kalau cell di kolom INCIDENT kosong, hapus warnanya.
-  var lastDataRow = Math.max(ws.getLastRow(), 1);
-  var incColIdx = colIncident + 1;
-  var allData = ws.getRange(2, 1, Math.max(lastDataRow - 1, 1), Math.max(ws.getLastColumn(), 1)).getValues();
-  var emptyRanges = [];
-  for (var cl = 0; cl < allData.length; cl++) {
-    var cellInc = allData[cl][colIncident];
-    if (cellInc === undefined || String(cellInc).trim() === "") {
-      emptyRanges.push(cl + 2); // baris sheet (1-based, +1 header)
+    hapusRentangCepat(ws, rowsHapus);
+    stat.hapus = rowsHapus.length;
+
+    // (5b) RECOLOR kolom INCIDENT:
+    //      - Baris BARU (INC yang ditambahkan sync INI) = HIJAU (tetap).
+    //      - Baris LAMA yang ada di Insera (update/terbawa) = KUNING.
+    //      - Selain itu (tak ada di Insera) = bersihkan (null).
+    var incBaruIni = {};
+    for (var nb = 0; nb < barisBaru.length; nb++) {
+      var incN = barisBaru[nb] && barisBaru[nb][colIncident] !== undefined
+        ? String(barisBaru[nb][colIncident]).trim().toUpperCase() : "";
+      if (incN !== "") incBaruIni[incN] = true;
+    }
+    var histRows = Math.max(ws.getLastRow() - 1, 0); // data row 2..last
+    var histCol = Math.max(ws.getLastColumn(), 1);
+    if (histRows > 0 && histCol > colIncident) {
+      var curData = ws.getRange(2, 1, histRows, histCol).getValues();
+      var warnaMatrix = [];
+      for (var cr = 0; cr < curData.length; cr++) {
+        var cellInc = (curData[cr][colIncident] !== undefined) ? String(curData[cr][colIncident]).trim().toUpperCase() : "";
+        var warnaSel = null;
+        if (cellInc !== "" && incDiInsera[cellInc]) {
+          warnaSel = incBaruIni[cellInc] ? warnaBaru : warnaLama;
+        }
+        warnaMatrix.push([warnaSel]);
+      }
+      ws.getRange(2, colIncident + 1, histRows, 1).setBackgrounds(warnaMatrix);
     }
   }
-  // Batch clear background untuk baris-baris kosong (per 100 baris agar tidak timeout).
-  for (var er = 0; er < emptyRanges.length; er += 100) {
-    var chunk = emptyRanges.slice(er, er + 100);
-    for (var ec = 0; ec < chunk.length; ec++) {
-      ws.getRange(chunk[ec], incColIdx).setBackground(null);
-    }
-  }
+  // Bila tidak lengkap: JANGAN hapus & JANGAN recolor (safety — data belum tentu lengkap).
 
   stat.total = stat.baru + stat.update;
   return stat;
+}
+
+/**
+ * Hapus daftar baris (1-based) secara cepat: kelompokkan baris berurutan menjadi
+ * satu panggilan `deleteRow` per-chunk kontigu, urut terbalik biar index tidak geser.
+ */
+function hapusRentangCepat(ws, rowsHapus) {
+  if (!rowsHapus || rowsHapus.length === 0) return;
+  var unik = rowsHapus.slice().sort(function (a, b) { return a - b; });
+  var chunks = []; // tiap chunk = {start, start}
+  var s = unik[0], prev = unik[0];
+  for (var i = 1; i < unik.length; i++) {
+    if (unik[i] === prev + 1) { prev = unik[i]; continue; }
+    chunks.push({ start: s, count: prev - s + 1 });
+    s = unik[i]; prev = unik[i];
+  }
+  chunks.push({ start: s, count: prev - s + 1 });
+  // Hapus dari bawah ke atas (index tidak geser).
+  for (var c = chunks.length - 1; c >= 0; c--) {
+    ws.getRange(chunks[c].start, 1, chunks[c].count).deleteCells(SpreadsheetApp.Dimension.ROWS);
+  }
 }

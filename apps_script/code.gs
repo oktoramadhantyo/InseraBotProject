@@ -4,6 +4,7 @@
  * Bagian BACK-END (server) yang menerima data tiket dari userscript Tampermonkey
  * lalu menulis/update ke tab `copas tket` di spreadsheet ini.
  *
+ * v2.2 - Fix hapus baris utuh (deleteRows) — sebelumnya cuma kolom INC yang terhapus
  * v2.1 - Diselaraskan dengan Tampermonkey v1.6.0 (one-cycle)
  * - Warna 2 macam: HIJAU (baris baru) & KUNING (baris lama/update)
  * - Hapus SEMUA baris INC kosong (bukan tiket Insera) saat lengkap=true
@@ -286,6 +287,6 @@ function hapusRentangCepat(ws, rowsHapus) {
   chunks.push({ start: s, count: prev - s + 1 });
   // Hapus dari bawah ke atas (index tidak geser).
   for (var c = chunks.length - 1; c >= 0; c--) {
-    ws.getRange(chunks[c].start, 1, chunks[c].count).deleteCells(SpreadsheetApp.Dimension.ROWS);
+    ws.deleteRows(chunks[c].start, chunks[c].count);
   }
 }

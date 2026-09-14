@@ -564,6 +564,8 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
       return 0;
     }
   }
+  // Hitung ulang kapasitas SETELAH blokAkhir (mungkin berubah oleh seed blok di atas).
+  kapasitas = Math.max(blokAkhir - TTR_START_ROW + 1, 0);
 
   // EKSPANSI BLOK: data tiket bisa lebih banyak dari blok saat ini (blok mengecil
   // karena pernah ditulis kosong saat data sedang sedikit). Perluas blok ke bawah
@@ -721,6 +723,8 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
       return 0;
     }
   }
+  // Hitung ulang kapasitas SETELAH blokAkhir (mungkin berubah oleh seed blok di atas).
+  kapasitas = Math.max(blokAkhir - start + 1, 0);
 
   if (rowsData.length > kapasitas) {
     var targetBawah = Math.min(start + rowsData.length - 1, cfg.maxBaris + start - 1);

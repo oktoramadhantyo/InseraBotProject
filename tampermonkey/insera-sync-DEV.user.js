@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         BotInsera - Sync Tiket Insera ke Google Sheets
+// @name         BotInsera DEV - coba coba
 // @namespace    http://tampermonkey.net/
 // @version      1.7.0
-// @description  Baca seluruh baris tabel ALL TICKET LIST Insera lalu kirim otomatis ke Google Apps Script (tab copas tket). One-cycle: sync selesai -> countdown -> reload -> sync lagi. Kirim colSto (WORKZONE) agar sheet di-sort A-Z sebelum ditulis.
+// @description  [DEV/UJI] Sama seperti production (+sort WORKZONE) tetapi menulis ke spreadsheet COPY via deployment khusus. Nama dibuat beda agar tidak menimpa script production saat dites.
 // @author       diana
 // @match        *://*oss-incident.telkom.co.id/*
 // @match        *://*.telkom.co.id/*
@@ -16,10 +16,10 @@
 (function () {
   "use strict";
 
-  console.log("[BotInsera] Script DIMULAI. URL:", location.href);
+  console.log("[BotInsera DEV] Script DIMULAI. URL:", location.href);
 
   // ============ KONFIGURASI ============
-  var USERS_URL = "https://script.google.com/macros/s/AKfycbxKUwAcglCKqsyyJAc78rC9DviJJtSZ3AHpZACZ-fC23bS6iBJOTpk7H7_7cj3e92LHPQ/exec";
+  var USERS_URL = "https://script.google.com/macros/s/AKfycby9Rd6fJB8HuVqHG4GG0629x7tlrdf_BOkvEeMUU3to7MXqiyP7DG1ECNNx0GLOE7dA/exec";
   var ACCESS_TOKEN = "#Ez6KQZpzEYYXSeYWyZAGA7N";
   // Indeks kolom No INCIDENT (0-based). Cadangan/fallback; dideteksi otomatis dari data.
   var COL_INCIDENT = 0;
@@ -50,7 +50,7 @@
   var lagiSync = false;
 
   function log(msg) {
-    console.log("[BotInsera]", msg);
+    console.log("[BotInsera DEV]", msg);
   }
 
   // Toast notifikasi (default 5000 ms = 5 detik).
@@ -98,7 +98,7 @@
       btnKlik.style.cssText = TOMBOL_BASE + "bottom:20px;background:#1565c0;";
       btnKlik.addEventListener("click", function () { syncSekarang(false); });
       document.body.appendChild(btnKlik);
-      console.log("[BotInsera] Tombol Sync dipasang.");
+      console.log("[BotInsera DEV] Tombol Sync dipasang.");
     }
 
     // Tombol tunggal Auto (one-cycle: reload+sync).
@@ -270,7 +270,7 @@
     var doc = cariDokumenTabel();
     var out = [];
     if (!doc) {
-      console.log("[BotInsera] Tabel TIDAK ditemukan.");
+      console.log("[BotInsera DEV] Tabel TIDAK ditemukan.");
       return { rows: out, colIncident: -1 };
     }
     var container = doc.querySelector("table");
@@ -280,7 +280,7 @@
 
     var rows = container.querySelectorAll("tbody tr");
     if (rows.length === 0) rows = container.querySelectorAll("tr");
-    console.log("[BotInsera] Ditemukan " + rows.length + " baris <tr>.");
+    console.log("[BotInsera DEV] Ditemukan " + rows.length + " baris <tr>.");
 
     rows.forEach(function (tr) {
       if (tr.querySelector("th")) return;
@@ -300,7 +300,7 @@
     var colSto = thead ? deteksiKolomSto(thead, indexTerlihat) : -1;
     // Buang baris INC kosong (minimalisir ketidakseragaman di sheet).
     if (colIncident >= 0) out = filterBarisINC(out, colIncident);
-    console.log("[BotInsera] Kolom INCIDENT di indeks " + colIncident +
+    console.log("[BotInsera DEV] Kolom INCIDENT di indeks " + colIncident +
                 ", kolom WORKZONE(STO) di indeks " + colSto +
                 ", baris valid " + out.length);
     return { rows: out, colIncident: colIncident, colSto: colSto };
@@ -655,7 +655,9 @@
           : "";
         var ringkas = "Baru: " + (res.baru || 0) +
           " | Update: " + (res.update || 0) +
-          " | Hapus: " + (res.hapus || 0);
+          " | Hapus: " + (res.hapus || 0) +
+          " | TTR: " + (res.ttr || 0) +
+          " | Report: " + (res.report || 0);
         log("Auto-sync SELESAI: " + ringkas);
 
         toast("✓ Sinkron selesai!\n" +
@@ -664,6 +666,8 @@
           "\nBaru (hijau): " + (res.baru || 0) +
           "\nUpdate (kuning): " + (res.update || 0) +
           "\nHapus otomatis: " + (res.hapus || 0) +
+          "\nTTR baris di-update: " + (res.ttr || 0) +
+          "\nReport baris di-update: " + (res.report || 0) +
           "\nKolom/baris: " + kolomPerBaris + " (ideal 81)" + peringatan, 5000);
       } else if (res && res.error === "TOKEN_SALAH") {
         toast("Token salah! Cocokkan ACCESS_TOKEN di userscript & code.gs", 5000);
@@ -698,7 +702,7 @@
       } catch (e) { L.push("iframe#" + i + ": CROSS-ORIGIN"); }
     });
     var msg = L.join("\n");
-    console.log("[BotInsera] DEBUG:\n" + msg);
+    console.log("[BotInsera DEV] DEBUG:\n" + msg);
     return msg;
   }
 

@@ -9,6 +9,8 @@
  *        v2.4.1 - Auto-rebuild (onEdit) ketika copas tket di-edit manual, tanpa tombol.
  *        v2.4.2 - Fix deteksi kolom INCIDENT (ambil kejadian PERTAMA di header) + blok bisa
  *                 muncul walau sheet pernah dibersihkan (lastRow kecil/baris kosong).
+ *        v2.4.3 - Fix hitung ulang kapasitas blok setelah seed sehingga data benar-benar ditulis.
+ *        v2.4.4 - Penanda VERSI di doPost log & doGet untuk memastikan versi deployment yang jalan.
  * v2.3 - Sort WORKZONE (STO) A-Z di copas tket + rebuild blok data MONITORING TTR (A-G)
  * v2.2 - Fix hapus baris utuh (deleteRows) — sebelumnya cuma kolom INC yang terhapus
  * v2.1 - Diselaraskan dengan Tampermonkey v1.6.0 (one-cycle)
@@ -30,6 +32,7 @@
 
 // ============ KONFIGURASI ============
 var ACCESS_TOKEN = "#Ez6KQZpzEYYXSeYWyZAGA7N";
+var VERSI = "v2.4.4"; // penanda versi: dipakai di log & doGet biar tahu kode mana yang jalan.
 var TAB_TUJUAN = "copas tket";
 
 // Tab MONITORING TTR (blok data utama) — diisi ulang otomatis oleh script (nilai statis).
@@ -121,7 +124,7 @@ function doPost(e) {
     var colIncident = (body.colIncident !== undefined) ? body.colIncident : 0;
     var colSto = (body.colSto !== undefined && body.colSto >= 0) ? body.colSto : COL_WORKZONE_DEFAULT;
     var lengkap = !!body.lengkap;
-    console.log("[BotInsera] doPost: rows=" + (rows && rows.length) +
+    console.log("[BotInsera] doPost " + VERSI + ": rows=" + (rows && rows.length) +
                 " colIncident=" + colIncident + " colSto=" + colSto + " lengkap=" + lengkap);
 
     if (rows.length === 0) {
@@ -156,11 +159,11 @@ function doPost(e) {
 }
 
 function doGet() {
-  // Diagnostik: tampilkan nama spreadsheet target biar tahu URL ini ngarah ke mana.
+  // Diagnostik: tampilkan nama spreadsheet & versi biar tahu URL ini ngarah ke mana.
   var nama = "";
   try { nama = SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { /* ignore */ }
   return ContentService
-    .createTextOutput("BotInsera Apps Script OK" + (nama ? " | spreadsheet: " + nama : ""))
+    .createTextOutput("BotInsera Apps Script (" + VERSI + ") OK" + (nama ? " | spreadsheet: " + nama : ""))
     .setMimeType(ContentService.MimeType.TEXT);
 }
 

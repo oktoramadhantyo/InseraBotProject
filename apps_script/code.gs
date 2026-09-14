@@ -6,6 +6,7 @@
  *
  * v2.4 - Rebuild blok kiri REPORT JAKUT / REPORT JAKBAR / FFG (nilai statis) dari copas tket;
  *        FFG flag via READ-ONLY 'DATA PS' kolom M; tabel kanan & DATA PS tidak disentuh.
+ *        v2.4.1 - Auto-rebuild (onEdit) ketika copas tket di-edit manual, tanpa tombol.
  * v2.3 - Sort WORKZONE (STO) A-Z di copas tket + rebuild blok data MONITORING TTR (A-G)
  * v2.2 - Fix hapus baris utuh (deleteRows) — sebelumnya cuma kolom INC yang terhapus
  * v2.1 - Diselaraskan dengan Tampermonkey v1.6.0 (one-cycle)
@@ -752,4 +753,53 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
               " baris (kapasitas " + kapasitas + ", rentang " + start + "-" + blokAkhir +
               ", DURASI restore=" + hRestore + ")");
   return count;
+}
+
+// ============ REBUILD OTOMATIS (AUTO KETIKA COPAS TKET DIEDIT) ============
+
+// Auto-rebuild ketika tab 'copas tket' di-EDIT MANUAL oleh user (paste tiket,
+// tulis manual, hapus baris dsb.). Perubahan yang dilakukan SCRIPT — termasuk
+// dari doPost bot sync — TIDAK memicu onEdit, jadi tidak dobel-rebuild dengan bot.
+// Debounce 45 detik (via CacheService) supaya paste besar yang memicu beberapa
+// event edit beruntun tidak sampai rebuild berkali-kali.
+function onEdit(e) {
+  var range = e ? e.range : null;
+  if (!range || !range.getSheet()) return;
+  if (range.getSheet().getName() !== TAB_TUJUAN) return;
+  if (range.getRow() < 2) return;
+
+  try {
+    var cache = CacheService.getScriptCache();
+    var kunci = "lastAutoRebuild";
+    var now = Date.now();
+    var last = cache.get(kunci);
+    if (last && (now - parseInt(last, 10)) < 45000) return;
+    cache.put(kunci, String(now), 55);
+  } catch (err) {
+    // CacheService tak tersedia => tetap rebuild (tanpa debounce).
+  }
+
+  rebuildSemuaInternal();
+}
+
+// Baca isi copas tket terkini, deteksi kolom INCIDENT & WORKZONE dari header,
+// lalu rebuild MONITORING TTR + blok kiri REPORT JAKUT / JAKBAR / FFG.
+function rebuildSemuaInternal() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ws = ss.getSheetByName(TAB_TUJUAN);
+  if (!ws) return;
+  var lastCol = Math.max(ws.getLastColumn(), 1);
+  var header = ws.getRange(1, 1, 1, lastCol).getValues()[0];
+  var colIncident = 0;
+  var colSto = COL_WORKZONE_DEFAULT;
+  for (var i = 0; i < lastCol; i++) {
+    var h = String(header[i]).toUpperCase();
+    if (/INCIDENT/.test(h)) colIncident = i;
+    if (/WORKZONE/.test(h)) colSto = i;
+  }
+  console.log("[BotInsera] auto-rebuild (user edit) colIncident=" + colIncident +
+              " colSto=" + colSto);
+  var ttr = kumpulDanTulisTTR(ws, colIncident, colSto);
+  var report = kumpulDanTulisReport(ws, colIncident, colSto);
+  console.log("[BotInsera] auto-rebuild selesai: TTR=" + ttr + " report=" + report);
 }

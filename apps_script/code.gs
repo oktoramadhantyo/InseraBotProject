@@ -7,6 +7,8 @@
  * v2.4 - Rebuild blok kiri REPORT JAKUT / REPORT JAKBAR / FFG (nilai statis) dari copas tket;
  *        FFG flag via READ-ONLY 'DATA PS' kolom M; tabel kanan & DATA PS tidak disentuh.
  *        v2.4.1 - Auto-rebuild (onEdit) ketika copas tket di-edit manual, tanpa tombol.
+ *        v2.4.2 - Fix deteksi kolom INCIDENT (ambil kejadian PERTAMA di header) + blok bisa
+ *                 muncul walau sheet pernah dibersihkan (lastRow kecil/baris kosong).
  * v2.3 - Sort WORKZONE (STO) A-Z di copas tket + rebuild blok data MONITORING TTR (A-G)
  * v2.2 - Fix hapus baris utuh (deleteRows) — sebelumnya cuma kolom INC yang terhapus
  * v2.1 - Diselaraskan dengan Tampermonkey v1.6.0 (one-cycle)
@@ -422,6 +424,20 @@ function hapusRentangCepat(ws, rowsHapus) {
 
 // ============ HELPERS (BUAT SORT & MONITORING TTR) ============
 
+// Cek apakah area range (row, col, numRows, numCols) di sheets kosong SEMUA.
+// true = boleh ditimpa/diperluas; false = ada isi lain di sana (berbahaya).
+function cekKosongBlok(ws, row, col, numRows, numCols) {
+  if (numRows <= 0 || numCols <= 0) return true;
+  var nilai = ws.getRange(row, col, numRows, numCols).getValues();
+  for (var i = 0; i < nilai.length; i++) {
+    for (var j = 0; j < nilai[i].length; j++) {
+      var v = nilai[i][j];
+      if (v !== "" && v !== null && String(v).trim() !== "") return false;
+    }
+  }
+  return true;
+}
+
 // Ambil nilai bersih (trimmed string) dari sel baris array dengan fallback aman.
 // Dipakai untuk kolom teks (A-D, G). Untuk kolom tanggal, pakai valPreserveDate.
 function val(row, idx) {
@@ -531,34 +547,34 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
   var kapasitas = Math.max(blokAkhir - TTR_START_ROW + 1, 0);
   var count = Math.min(rowsData.length, kapasitas);
 
-  // Fallback aman: blok sama sekali tidak terdeteksi padahal ada data. Kolom A-G
-  // area bawah umumnya kosong (report tabel hidup di kolom K+), jadi cukup
-  // tulis pada rentang scan (dibatasi TTR_MAKS_BARIS, tanpa insert/delete baris).
-  if (!adaBlok && rowsData.length > 0 && scanRows > 0) {
-    blokAkhir = TTR_START_ROW + scanRows - 1;
-    kapasitas = scanRows;
-    count = Math.min(rowsData.length, kapasitas);
+  // Bila blok TIDAK terdeteksi padahal ada data tiket: cek area A-G dari TTR_START_ROW
+  // ke bawah sudah kosong semua (mis. blok pernah dibersihkan / lastRow kecil). Kalau
+  // kosong, jadikan batas blok = sebesar kebutuhan baris (dibatasi TTR_MAKS_BARIS) —
+  // TANPA batas lastRow, supaya data tetap muncul walau sheet cuma berisi header.
+  if (!adaBlok && rowsData.length > 0) {
+    var targetAwal = TTR_START_ROW + Math.min(rowsData.length, TTR_MAKS_BARIS) - 1;
+    if (cekKosongBlok(ws, TTR_START_ROW, 1, targetAwal - TTR_START_ROW + 1, 7)) {
+      blokAkhir = targetAwal;
+      adaBlok = true;
+    } else if (scanRows > 0) {
+      blokAkhir = TTR_START_ROW + scanRows - 1; // area terisi lain -> batasi di scan area
+    } else {
+      console.log("[BotInsera] TTR: blok tak terdeteksi & area A-G baris " +
+                  TTR_START_ROW + "-" + targetAwal + " berisi data lain, skip rebuild.");
+      return 0;
+    }
   }
 
   // EKSPANSI BLOK: data tiket bisa lebih banyak dari blok saat ini (blok mengecil
   // karena pernah ditulis kosong saat data sedang sedikit). Perluas blok ke bawah
   // SELAMA kolom A-G area tujuannya masih kosong (report block hidup di kolom K+,
-  // kolom A-G di bawah blok umumnya kosong). Dibatasi TTR_MAKS_BARIS & lastRow.
+  // kolom A-G di bawah blok umumnya kosong). Dibatasi TTR_MAKS_BARIS.
   if (rowsData.length > kapasitas) {
     var targetBawah = Math.min(TTR_START_ROW + rowsData.length - 1,
-                               TTR_MAKS_BARIS + TTR_START_ROW - 1,
-                               lastRowT);
+                               TTR_MAKS_BARIS + TTR_START_ROW - 1);
     var perluas = targetBawah - blokAkhir;
     if (perluas > 0) {
-      var cekKosong = ws.getRange(blokAkhir + 1, 1, perluas, 7).getValues();
-      var aman = true;
-      for (var ek = 0; ek < cekKosong.length && aman; ek++) {
-        for (var ekc = 0; ekc < 7; ekc++) {
-          var cvv = cekKosong[ek][ekc];
-          if (cvv !== "" && cvv !== null && String(cvv).trim() !== "") { aman = false; break; }
-        }
-      }
-      if (aman) {
+      if (cekKosongBlok(ws, blokAkhir + 1, 1, perluas, 7)) {
         blokAkhir = targetBawah;
         kapasitas = blokAkhir - TTR_START_ROW + 1;
         adaBlok = true;
@@ -688,25 +704,33 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
   var kapasitas = Math.max(blokAkhir - start + 1, 0);
   var count = Math.min(rowsData.length, kapasitas);
 
-  if (!adaBlok && rowsData.length > 0 && scanRows > 0) {
-    blokAkhir = start + scanRows - 1;
-    kapasitas = scanRows;
-    count = Math.min(rowsData.length, kapasitas);
+  // Bila blok TIDAK terdeteksi padahal ada data tiket: cek area kolom 1..jmlKolom dari
+  // start ke bawah sudah kosong semua (blok pernah dibersihkan / lastRow kecil). Kalau
+  // kosong, jadikan batas blok = sebesar kebutuhan baris (dibatasi cfg.maxBaris) —
+  // TANPA batas lastRow, supaya data tetap muncul walau sheet cuma berisi header.
+  if (!adaBlok && rowsData.length > 0) {
+    var targetAwal = start + Math.min(rowsData.length, cfg.maxBaris) - 1;
+    if (cekKosongBlok(ws, start, 1, targetAwal - start + 1, jmlKolom)) {
+      blokAkhir = targetAwal;
+      adaBlok = true;
+    } else if (scanRows > 0) {
+      blokAkhir = start + scanRows - 1; // area terisi lain -> batasi di scan area
+    } else {
+      console.log("[BotInsera] " + cfg.tab + ": blok tak terdeteksi & area baris " +
+                  start + "-" + targetAwal + " berisi data lain, skip rebuild.");
+      return 0;
+    }
   }
 
   if (rowsData.length > kapasitas) {
-    var targetBawah = Math.min(start + rowsData.length - 1, cfg.maxBaris + start - 1, lastRowT);
+    var targetBawah = Math.min(start + rowsData.length - 1, cfg.maxBaris + start - 1);
     var perluas = targetBawah - blokAkhir;
     if (perluas > 0) {
-      var cekKosong = ws.getRange(blokAkhir + 1, 1, perluas, jmlKolom).getValues();
-      var aman = true;
-      for (var ek = 0; ek < cekKosong.length && aman; ek++) {
-        for (var ekc = 0; ekc < jmlKolom; ekc++) {
-          var cvv = cekKosong[ek][ekc];
-          if (cvv !== "" && cvv !== null && String(cvv).trim() !== "") { aman = false; break; }
-        }
+      if (cekKosongBlok(ws, blokAkhir + 1, 1, perluas, jmlKolom)) {
+        blokAkhir = targetBawah;
+        kapasitas = blokAkhir - start + 1;
+        adaBlok = true;
       }
-      if (aman) { blokAkhir = targetBawah; kapasitas = blokAkhir - start + 1; adaBlok = true; }
     }
   }
   count = Math.min(rowsData.length, kapasitas);
@@ -790,13 +814,16 @@ function rebuildSemuaInternal() {
   if (!ws) return;
   var lastCol = Math.max(ws.getLastColumn(), 1);
   var header = ws.getRange(1, 1, 1, lastCol).getValues()[0];
-  var colIncident = 0;
-  var colSto = COL_WORKZONE_DEFAULT;
+  var colIncident = -1;
+  var colSto = -1;
   for (var i = 0; i < lastCol; i++) {
     var h = String(header[i]).toUpperCase();
-    if (/INCIDENT/.test(h)) colIncident = i;
-    if (/WORKZONE/.test(h)) colSto = i;
+    // Ambil kejadian PERTAMA (kolom INCIDENT selalu paling awal / dekat awal header).
+    if (colIncident < 0 && /INCIDENT/.test(h)) colIncident = i;
+    if (colSto < 0 && /WORKZONE/.test(h)) colSto = i;
   }
+  if (colIncident < 0) colIncident = 0;
+  if (colSto < 0) colSto = COL_WORKZONE_DEFAULT;
   console.log("[BotInsera] auto-rebuild (user edit) colIncident=" + colIncident +
               " colSto=" + colSto);
   var ttr = kumpulDanTulisTTR(ws, colIncident, colSto);

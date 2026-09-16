@@ -201,17 +201,44 @@
   // ============ BACA DARI DOM ============
 
   function cariDokumenTabel() {
-    if (document.querySelector("table tbody tr td")) return document;
+    if (cariTabelInsera(document)) return document;
     var iframes = document.querySelectorAll("iframe");
     for (var i = 0; i < iframes.length; i++) {
       try {
         var fdoc = iframes[i].contentDocument || iframes[i].contentWindow.document;
-        if (fdoc && fdoc.querySelector("table tbody tr td")) {
+        if (fdoc && cariTabelInsera(fdoc)) {
           return fdoc;
         }
       } catch (e) { /* cross-origin */ }
     }
     return null;
+  }
+
+  // Identitas TABEL INSERA yang sebenarnya (All Ticket List):
+  // prioritas id resmi `datalistInboxAllticketV2`, fallback tabel dengan header INCIDENT.
+  function cariTabelInsera(doc) {
+    if (!doc) return null;
+    var byId = doc.getElementById("datalistInboxAllticketV2");
+    if (byId) return byId;
+    var tables = doc.querySelectorAll("table");
+    for (var tx = 0; tx < tables.length; tx++) {
+      var tbl = tables[tx];
+      if (/datepicker/i.test(tbl.className || "")) continue;
+      var theadx = tbl.querySelector("thead");
+      if (!theadx) continue;
+      var ths = theadx.querySelectorAll("th");
+      for (var iy = 0; iy < ths.length; iy++) {
+        var hdr = (ths[iy].innerText || ths[iy].textContent || "").trim().toUpperCase();
+        if (/INCIDENT/.test(hdr)) return tbl;
+      }
+    }
+    return null;
+  }
+
+  // Pastikan sync hanya berjalan di halaman ALL TICKET LIST Insera.
+  function cekHalamanInsera() {
+    return /allticketlist/i.test(location.href) ||
+      /\ball ?ticket ?list\b/i.test(document.title || "");
   }
 
   function deteksiKolomIncident(rows) {
@@ -273,7 +300,11 @@
       console.log("[BotInsera DEV] Tabel TIDAK ditemukan.");
       return { rows: out, colIncident: -1 };
     }
-    var container = doc.querySelector("table");
+    var container = cariTabelInsera(doc);
+    if (!container) {
+      log("Tabel Insera tidak terdeteksi (identitas tak cocok), batal baca.");
+      return { rows: out, colIncident: -1 };
+    }
     var thead = container.querySelector("thead tr");
     var indexTerlihat = null;
     if (thead) indexTerlihat = indeksTerlihat(thead);
@@ -309,7 +340,7 @@
   function cekTabelAda() {
     var doc = cariDokumenTabel();
     if (!doc) return false;
-    var t = doc.querySelector("table");
+    var t = cariTabelInsera(doc);
     if (!t) return false;
     var trs = t.querySelectorAll("tbody tr");
     if (trs.length === 0) trs = t.querySelectorAll("tr");
@@ -359,16 +390,7 @@
 
   function ekstrakBarisDariHTML(html, kunciCol) {
     var docParsed = new DOMParser().parseFromString(html, "text/html");
-    var container = docParsed.getElementById("datalistInboxAllticketV2");
-    if (!container) {
-      var tabs = docParsed.querySelectorAll("table");
-      for (var t = 0; t < tabs.length; t++) {
-        if (tabs[t].querySelector("thead") && !/datepicker/i.test(tabs[t].className || "")) {
-          container = tabs[t];
-          break;
-        }
-      }
-    }
+    var container = cariTabelInsera(docParsed);
     if (!container) return [];
     var indexTerlihat = null;
     var thead = container.querySelector("thead tr");
@@ -584,6 +606,16 @@
     lagiSync = true;
     updateTeksAuto();
 
+    var retryCoba = 0;
+    var syncLengkap = true;
+
+    if (!cekHalamanInsera()) {
+      log("Bukan halaman ALL TICKET LIST Insera, sync dibatalkan.");
+      if (!otomatis) toast("Bukan halaman ALL TICKET LIST Insera.\nSync dibatalkan.", 6000);
+      akhiriSync();
+      return;
+    }
+
     var detailStruktur = debugStruktur();
     var percobaan = 0;
     var barisTerbaca = 0;
@@ -622,9 +654,19 @@
         kolomStoTerpakai = hasil.colSto;
         totalHalaman = hasil.totalHalaman || 1;
         if (rows.length > 0) {
+          if (hasil.colIncident < 0) {
+            log("Pola kolom INCIDENT tidak ditemukan — batal kirim (bukan tabel Insera / struktur berubah).");
+            if (!otomatis) toast("Bukan tabel Insera / struktur berubah (kolom INCIDENT tidak terdeteksi).\n\nHASIL DIAGNOSA:\n" + detailStruktur, 6000);
+            akhiriSync();
+            return;
+          }
           kolomPerBaris = rows[0].length;
           toast("✓ Tabel ter-baca: " + rows.length + " baris.\nMengirim ke spreadsheet...", 5000);
           var lengkap = (hasil.lengkap !== undefined) ? hasil.lengkap : (hasil.totalHalaman <= 1);
+          syncLengkap = lengkap;
+          if (!lengkap) {
+            log("PERINGATAN: sync tidak penuh (lengkap=false). Fetch halaman mungkin ada yang gagal.");
+          }
           log("lengkap=" + lengkap + " totalHalaman=" + totalHalaman + " colIncident=" + hasil.colIncident + " colSto=" + hasil.colSto);
           kirimKeAppsScript(rows, hasil.colIncident, hasil.colSto, lengkap, selesaiKlik);
           return;
@@ -645,34 +687,74 @@
       });
     }
 
+    function cobaRetry(alasan) {
+      if (!otomatis) {
+        toast("⚠️ Sync tidak penuh: " + alasan + ".\nJalankan Sync manual untuk mencoba lagi.", 6000);
+        akhiriSync();
+        return;
+      }
+      if (retryCoba >= 2) {
+        toast("🚫 Sync TIDAK penuh setelah 3 percobaan (" + alasan + ").\nCek jaringan/halaman, lalu jalankan Sync manual.", 7000);
+        log("Retry habis karena: " + alasan);
+        akhiriSync();
+        return;
+      }
+      retryCoba++;
+      var jeda = retryCoba === 1 ? 10000 : 30000;
+      toast("⚠️ Sync tidak penuh: " + alasan + ".\nMenyinkronkan ulang (" + (retryCoba + 1) + "/3) dalam " + (jeda / 1000) + " detik...", 6000);
+      log("Auto: retry " + retryCoba + "/3 karena " + alasan);
+      setTimeout(function () {
+        if (lagiSync) bacaDanLanjut();
+      }, jeda);
+    }
+
     function selesaiKlik(res, ok) {
       if (!ok) {
         toast("Gagal: " + res, 5000);
         log("Auto-sync GAGAL: " + res);
-      } else if (res && res.ok) {
-        var peringatan = (kolomIncidentTerpakai === -1)
-          ? "\n\n⚠️ Pola kolom INCIDENT (-1) tidak ditemukan. Fallback ke indeks 0."
-          : "";
-        var ringkas = "Baru: " + (res.baru || 0) +
-          " | Update: " + (res.update || 0) +
-          " | Hapus: " + (res.hapus || 0) +
-          " | TTR: " + (res.ttr || 0) +
-          " | Report: " + (res.report || 0);
-        log("Auto-sync SELESAI: " + ringkas);
+        cobaRetry("kirim ke Apps Script gagal");
+        return;
+      }
+      if (!res || !res.ok) {
+        if (res && res.error === "TOKEN_SALAH") {
+          toast("Token salah! Cocokkan ACCESS_TOKEN di userscript & code.gs", 5000);
+        } else {
+          toast("Respon tidak dikenal: " + JSON.stringify(res).slice(0, 200), 5000);
+        }
+        cobaRetry("respon dari Apps Script tidak normal");
+        return;
+      }
 
-        toast("✓ Sinkron selesai!\n" +
-          "Baris dibaca: " + barisTerbaca +
-          "\nHalaman: " + totalHalaman +
-          "\nBaru (hijau): " + (res.baru || 0) +
-          "\nUpdate (kuning): " + (res.update || 0) +
-          "\nHapus otomatis: " + (res.hapus || 0) +
-          "\nTTR baris di-update: " + (res.ttr || 0) +
-          "\nReport baris di-update: " + (res.report || 0) +
-          "\nKolom/baris: " + kolomPerBaris + " (ideal 81)" + peringatan, 5000);
-      } else if (res && res.error === "TOKEN_SALAH") {
-        toast("Token salah! Cocokkan ACCESS_TOKEN di userscript & code.gs", 5000);
-      } else {
-        toast("Respon tidak dikenal: " + JSON.stringify(res).slice(0, 200), 5000);
+      var peringatan = (kolomIncidentTerpakai === -1)
+        ? "\n\n⚠️ Pola kolom INCIDENT (-1) tidak ditemukan. Fallback ke indeks 0."
+        : "";
+      var masalah = [];
+      if (!syncLengkap) masalah.push("halaman tak terbaca penuh (fetch sebagian gagal)");
+      if (res.truncated) masalah.push(res.alasan && String(res.alasan).indexOf("TRUNCATED") >= 0
+        ? String(res.alasan)
+        : "baris terpotong (kapasitas blok kurang / area bawah tidak kosong)");
+      var pesanMasalah = masalah.length > 0 ? "\n\n⚠️ " + masalah.join(" ; ") : "";
+
+      var ringkas = "Baru: " + (res.baru || 0) +
+        " | Update: " + (res.update || 0) +
+        " | Hapus: " + (res.hapus || 0) +
+        " | TTR: " + (res.ttr || 0) +
+        " | Report: " + (res.report || 0);
+      log("Auto-sync SELESAI: " + ringkas + (pesanMasalah));
+
+      toast("✓ Sinkron selesai!\n" +
+        "Baris dibaca: " + barisTerbaca +
+        "\nHalaman: " + totalHalaman +
+        "\nBaru (hijau): " + (res.baru || 0) +
+        "\nUpdate (kuning): " + (res.update || 0) +
+        "\nHapus otomatis: " + (res.hapus || 0) +
+        "\nTTR baris di-update: " + (res.ttr || 0) +
+        "\nReport baris di-update: " + (res.report || 0) +
+        "\nKolom/baris: " + kolomPerBaris + " (ideal 81)" + peringatan + pesanMasalah, 7000);
+
+      if (masalah.length > 0) {
+        cobaRetry(masalah.join(" ; "));
+        return;
       }
       akhiriSync();
     }

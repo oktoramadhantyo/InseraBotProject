@@ -655,7 +655,9 @@
           : "";
         var ringkas = "Baru: " + (res.baru || 0) +
           " | Update: " + (res.update || 0) +
-          " | Hapus: " + (res.hapus || 0);
+          " | Hapus: " + (res.hapus || 0) +
+          " | TTR: " + (res.ttr || 0) +
+          " | Report: " + (res.report || 0);
         log("Auto-sync SELESAI: " + ringkas);
 
         toast("✓ Sinkron selesai!\n" +
@@ -664,6 +666,8 @@
           "\nBaru (hijau): " + (res.baru || 0) +
           "\nUpdate (kuning): " + (res.update || 0) +
           "\nHapus otomatis: " + (res.hapus || 0) +
+          "\nTTR baris di-update: " + (res.ttr || 0) +
+          "\nReport baris di-update: " + (res.report || 0) +
           "\nKolom/baris: " + kolomPerBaris + " (ideal 81)" + peringatan, 5000);
       } else if (res && res.error === "TOKEN_SALAH") {
         toast("Token salah! Cocokkan ACCESS_TOKEN di userscript & code.gs", 5000);

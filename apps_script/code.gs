@@ -38,7 +38,7 @@ var TAB_TUJUAN = "copas tket";
 // Tab MONITORING TTR (blok data utama) — diisi ulang otomatis oleh script (nilai statis).
 var TAB_TTR = "MONITORING TTR";
 var TTR_START_ROW = 3;    // baris pertama blok data TTR (baris 1 = judul, baris 2 = header).
-var TTR_MAKS_BARIS = 200; // batas aman agar tidak menyentuh blok REPORTING di bagian bawah.
+var TTR_MAKS_BARIS = 1000000; // praktis tanpa batas; aman karena ekspansi tetap dicek ruang kosong (cekKosongBlok).
 var COL_WORKZONE_DEFAULT = 9; // index kolom WORKZONE (0-based) di baris data copas tket; fallback.
 
 // Pemetaan kolom data copas tket (index 0-based) ke kolom blok data TTR (1-based, kolom A=1).
@@ -56,7 +56,7 @@ var TTR_SRC_TYPE_TIKET    = 7;
 // Setiap cfg:
 //   tab         = nama tab sheet.
 //   startRow    = baris pertama data blok kiri (JAKUT/JAKBAR = 3, FFG = 2).
-//   maxBaris    = batas aman agar tidak menimpa blok report di bawahnya.
+//   maxBaris    = cukup besar (≈ tanpa batas); blok meluas selama kolom blok di bawah masih kosong.
 //   kolomNoTiket= kolom (1-based) tempat NO TIKET, utk deteksi awal/akhir blok.
 //   rumusDurasi = opsional; {col, dateCol, nowRef} utk menulis ulang rumus DURASI (I = $L$1).
 //   pemetaan    = urutan kolom blok kiri (1 kolom = 1 entri):
@@ -69,7 +69,7 @@ var BLOK_REPORT = [
   {
     tab: "REPORT JAKUT",
     startRow: 3,
-    maxBaris: 200,
+    maxBaris: 1000000,
     kolomNoTiket: 3, // C = NO TIKET
     rumusDurasi: { col: 9, dateCol: "F", nowRef: "L$1" }, // I DURASI, hitung dari F (REPORT DATE) vs L1=NOW()
     // A=WITEL(8) B=STO(-1) C=NO TIKET(-2) D=INET GANGGUAN(30) E=CUSTOMER TYPE(24)
@@ -79,7 +79,7 @@ var BLOK_REPORT = [
   {
     tab: "REPORT JAKBAR",
     startRow: 3,
-    maxBaris: 200,
+    maxBaris: 1000000,
     kolomNoTiket: 3,
     rumusDurasi: { col: 9, dateCol: "F", nowRef: "L$1" },
     pemetaan: [8, -1, -2, 30, 24, 3, 17, 7, "DURASI"]
@@ -87,7 +87,7 @@ var BLOK_REPORT = [
   {
     tab: "FFG",
     startRow: 2,
-    maxBaris: 200,
+    maxBaris: 1000000,
     kolomNoTiket: 2, // B = INCIDENT
     // A=STO(-1) B=INCIDENT(-2) C=SERVICE NO(30) D=FFG(flagging) E=REPORT DATE(3)
     pemetaan: [-1, -2, 30, "FFG", 3]

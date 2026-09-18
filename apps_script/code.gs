@@ -13,9 +13,11 @@
  *        v2.4.4 - Penanda VERSI di doPost log & doGet untuk memastikan versi deployment yang jalan.
  * v2.5 - GUARD anti-hapus: bila INC yang diterima turun drastis saat lengkap=true, hapus/rewrite
  *        ditunda (data lama dipertahankan); monitoring lengkap+kapasitas via tab LOG SYNC (kolom
- *        GUARD/TRUNCATED/PENYEBAB/DURASI); truncation & alasan dilaporkan ke userscript (toast);
- *        tulisTiket memakai kumpulDanTulis* yang mengembalikan {count, truncated}; onEdit debounce
- *        5 dtk + pantau tab 'DATA PS' (ffgOnly rebuild REPORT/FFG); menu 'BotInsera' (Rebuild
+ *        GUARD/TRUNCATED/PENYEBAB/DURASI) yang dipangkas otomatis (LOG_MAKS_BARIS); truncation,
+ *        guard & alasan dilaporkan ke userscript (toast + popup Gap/Penyebab); doPost mengembalikan
+ *        jmlLama (jumlah INC lama) untuk popup guard; tulisTiket memakai kumpulDanTulis* yang
+ *        mengembalikan {count, truncated}; onEdit debounce 5 dtk + pantau tab 'DATA PS'
+ *        (ffgOnly rebuild REPORT/FFG); menu 'BotInsera' (Rebuild
  *        Semua + Cek Konsistensi); rumus DURASI kolom H ditulis batch (setFormulas kontigu).
  * v2.3 - Sort WORKZONE (STO) A-Z di copas tket + rebuild blok data MONITORING TTR (A-G)
  * v2.2 - Fix hapus baris utuh (deleteRows) — sebelumnya cuma kolom INC yang terhapus
@@ -48,6 +50,7 @@ var TTR_MAKS_BARIS = 1000000; // praktis tanpa batas; aman karena ekspansi tetap
 
 // ============ LOG RIWAYAT SYNC & GUARD ANTI-HAPUS ============
 var TAB_LOG = "LOG SYNC"; // tab riwayat tiap sync (auto-dibuat bila belum ada).
+var LOG_MAKS_BARIS = 10;  // LOG SYNC dipangkas otomatis: sisakan N baris terbaru (baris 1 = header).
 // lengkap=true tapi jumlah INC diterima < GUARD_BATAS_PENYUSUTAN x jumlah lama
 // -> langkah HAPUS + rewrite DITUNDA (data baru tetap ditulis), ditandai di log.
 var GUARD_BATAS_PENYUSUTAN = 0.6;
@@ -151,7 +154,7 @@ function doPost(e) {
     var warnaBaru = WARNA_BARU;
     var warnaLama = WARNA_LAMA;
 
-    var stat = tulisTiket(rows, colIncident, colSto, lengkap, warnaBaru, warnaLama);
+    var stat = _tulisTiket(rows, colIncident, colSto, lengkap, warnaBaru, warnaLama);
     out.ok = true;
     out.baru = stat.baru;
     out.update = stat.update;
@@ -161,6 +164,7 @@ function doPost(e) {
     out.report = stat.report || 0;
     out.truncated = !!(stat.ttrTruncated || stat.reportTruncated);
     out.guard = !!stat.guard;
+    out.jmlLama = stat.jmlLama || 0;
     var alasan = [];
     if (stat.alasan) alasan.push(String(stat.alasan));
     if (stat.ttrTruncated) alasan.push("TRUNCATED: baris MONITORING TTR lebih sedikit dari data (ruang bawah padat)");
@@ -170,7 +174,7 @@ function doPost(e) {
     out.total = stat.baru + stat.update;
 
     // LOG SYNC: riwayat setiap sync.
-    catatLogSync({
+    _catatLogSync({
       WAKTU: new Date(),
       VERSI: VERSI,
       ROWS: (rows && rows.length) || 0,
@@ -225,13 +229,13 @@ function debugTTR() {
   Logger.log("H3 formula=[" + h3.getFormula() + "] value=[" + h3.getValues()[0][0] + "]");
   Logger.log("E5 formula=[" + ws.getRange("E5").getFormula() + "] value=[" + ws.getRange("E5").getValues()[0][0] + "]");
   Logger.log("K1 formula=[" + ws.getRange("K1").getFormula() + "] value=[" + ws.getRange("K1").getValues()[0][0] + "]");
-  dumpCodes("H3 formula", h3.getFormula());
-  dumpCodes("K1 formula", ws.getRange("K1").getFormula());
+  _dumpCodes("H3 formula", h3.getFormula());
+  _dumpCodes("K1 formula", ws.getRange("K1").getFormula());
 }
 
 // Cetak kode karakter (decimal) tiap huruf string s.
 // Kutip ASCII = 34; kutip melengkung kiri/kanan = 8220/8221; spasi non-break = 160.
-function dumpCodes(label, s) {
+function _dumpCodes(label, s) {
   if (!s) { Logger.log(label + ": (kosong)"); return; }
   var out = [];
   for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
@@ -250,7 +254,7 @@ function dumpCodes(label, s) {
  *   Semua baris valid kemudian di-SORT ulang by WORKZONE (A-Z), tie-break INCIDENT (A-Z),
  *   ditulis ulang sekaligus beserta recolor, lalu blok data MONITORING TTR (A-G) di-rebuild.
  */
-function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama) {
+function _tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ws = ss.getSheetByName(TAB_TUJUAN);
 
@@ -267,7 +271,7 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
   }
 
   var stat = { baru: 0, update: 0, lewat: 0, hapus: 0, ttr: 0, report: 0,
-               ttrTruncated: false, reportTruncated: false, guard: false, alasan: "", durasiReportMs: 0 };
+               ttrTruncated: false, reportTruncated: false, guard: false, alasan: "", jmlLama: 0, durasiReportMs: 0 };
   var barisBaru = [];
   var barisUpdate = {};
 
@@ -299,6 +303,7 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
   }
   var jmlIncBaru = Object.keys(incDiInsera).length;
   var jmlInsaLama = Object.keys(peta).length;
+  stat.jmlLama = jmlInsaLama;
   var guardAktif = false;
   if (lengkap && jmlInsaLama > 5 && jmlIncBaru < Math.round(jmlInsaLama * GUARD_BATAS_PENYUSUTAN)) {
     guardAktif = true;
@@ -350,7 +355,7 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
   // (4) Tambah baris BARU di bawah data terakhir + warna HIJAU.
   if (barisBaru.length > 0) {
     // Bila data belum tentu lengkap: sort dulu baris baru by WORKZONE biar awal yang rapi.
-    if (!lengkap) sortRows(barisBaru, colSto, colIncident);
+    if (!lengkap) _sortRows(barisBaru, colSto, colIncident);
     var lastRow = Math.max(ws.getLastRow(), 1);
     var firstEmpty = lastRow + 1;
     var nCols = 0;
@@ -394,7 +399,7 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
                 " incDiInsera=" + Object.keys(incDiInsera).length +
                 " rowsHapus(kosong+dupd+beda)=" + rowsHapus.length);
 
-    hapusRentangCepat(ws, rowsHapus);
+    _hapusRentangCepat(ws, rowsHapus);
     stat.hapus = rowsHapus.length;
 
     // (5b) SORT ulang seluruh baris valid by WORKZONE (A-Z) + tie-break INCIDENT (A-Z),
@@ -415,10 +420,10 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
       var curDataAll = ws.getRange(2, 1, histRows, histCol).getValues();
       var finalRows = [];
       for (var cf = 0; cf < curDataAll.length; cf++) {
-        if (val(curDataAll[cf], colIncident) === "") continue;
+        if (_val(curDataAll[cf], colIncident) === "") continue;
         finalRows.push(curDataAll[cf]);
       }
-      sortRows(finalRows, colSto, colIncident);
+      _sortRows(finalRows, colSto, colIncident);
 
       var sortedMatrix = [];
       for (var sm = 0; sm < finalRows.length; sm++) {
@@ -431,7 +436,7 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
 
         var warnaMatrix = [];
         for (var crm = 0; crm < sortedMatrix.length; crm++) {
-          var cellInc = val(sortedMatrix[crm], colIncident).toUpperCase();
+          var cellInc = _val(sortedMatrix[crm], colIncident).toUpperCase();
           var warnaSel = null;
           if (cellInc !== "" && incDiInsera[cellInc]) {
             warnaSel = incBaruIni[cellInc] ? warnaBaru : warnaLama;
@@ -447,13 +452,13 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
   // Bila tidak lengkap: JANGAN hapus & JANGAN sort ulang seluruh sheet (safety — data belum tentu lengkap).
 
   // (6) Rebuild MONITORING TTR dari data copas tket terkini (selalu di-sort WORKZONE A-Z).
-  var hasilTTR = kumpulDanTulisTTR(ws, colIncident, colSto);
+  var hasilTTR = _kumpulDanTulisTTR(ws, colIncident, colSto);
   stat.ttr = hasilTTR.count;
   stat.ttrTruncated = hasilTTR.truncated;
 
   // (7) Rebuild blok kiri REPORT JAKUT / REPORT JAKBAR / FFG (nilai statis, READ-ONLY thd DATA PS).
   var mulaiReport = Date.now();
-  var hasilReport = kumpulDanTulisReport(ws, colIncident, colSto);
+  var hasilReport = _kumpulDanTulisReport(ws, colIncident, colSto);
   stat.durasiReportMs = Date.now() - mulaiReport;
   stat.report = hasilReport.count;
   stat.reportTruncated = hasilReport.truncated;
@@ -470,7 +475,7 @@ function tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLama
  * Hapus daftar baris (1-based) secara cepat: kelompokkan baris berurutan menjadi
  * satu panggilan `deleteRow` per-chunk kontigu, urut terbalik biar index tidak geser.
  */
-function hapusRentangCepat(ws, rowsHapus) {
+function _hapusRentangCepat(ws, rowsHapus) {
   if (!rowsHapus || rowsHapus.length === 0) return;
   var unik = rowsHapus.slice().sort(function (a, b) { return a - b; });
   var chunks = []; // tiap chunk = {start, start}
@@ -491,7 +496,7 @@ function hapusRentangCepat(ws, rowsHapus) {
 
 // Cek apakah area range (row, col, numRows, numCols) di sheets kosong SEMUA.
 // true = boleh ditimpa/diperluas; false = ada isi lain di sana (berbahaya).
-function cekKosongBlok(ws, row, col, numRows, numCols) {
+function _cekKosongBlok(ws, row, col, numRows, numCols) {
   if (numRows <= 0 || numCols <= 0) return true;
   var nilai = ws.getRange(row, col, numRows, numCols).getValues();
   for (var i = 0; i < nilai.length; i++) {
@@ -505,14 +510,14 @@ function cekKosongBlok(ws, row, col, numRows, numCols) {
 
 // Ambil nilai bersih (trimmed string) dari sel baris array dengan fallback aman.
 // Dipakai untuk kolom teks (A-D, G). Untuk kolom tanggal, pakai valPreserveDate.
-function val(row, idx) {
+function _val(row, idx) {
   return (row && idx !== undefined && row.length > idx && row[idx] !== undefined && row[idx] !== null)
     ? String(row[idx]).trim() : "";
 }
 
 // Ambil nilai dari sel — JIKA Date object, biarkan sebagai Date (agar rumus Sheets bisa baca).
-// Jika bukan Date, kembalikan trimmed string seperti val().
-function valPreserveDate(row, idx) {
+// Jika bukan Date, kembalikan trimmed string seperti _val().
+function _valPreserveDate(row, idx) {
   if (!row || idx === undefined || row.length <= idx || row[idx] === undefined || row[idx] === null) return "";
   var v = row[idx];
   return (v instanceof Date) ? v : String(v).trim();
@@ -525,13 +530,13 @@ function valPreserveDate(row, idx) {
 // jadi formula yang ditulis script harus berisi ; persis seperti locale sheet.
 // Quotes dibangun via String.fromCharCode(34) agar bebas kutip melengkung.
 // Hasil sama: jam bulat + sisa menit (mis. "8 Jam 25 Menit").
-function rumusDURASI(row1) {
+function _rumusDURASI(row1) {
   // MONITORING TTR: tanggal di kolom E, NOW() di K1.
-  return rumusDurasiKolom("E", "K$1", row1);
+  return _rumusDurasiKolom("E", "K$1", row1);
 }
 
 // Rumus DURASI generik: tanggal di kolom `colDate`, acuan NOW() di `refNow` (mis. E/K$1 atau F/L$1).
-function rumusDurasiKolom(colDate, refNow, row1) {
+function _rumusDurasiKolom(colDate, refNow, row1) {
   var q = String.fromCharCode(34); // karakter kutip ASCII "
   return "=IF(ISBLANK(" + colDate + row1 + ");" + q + q + ";INT((" + refNow + "-" + colDate + row1 + ")*24)&" + q +
          " Jam " + q + "&MINUTE(" + refNow + "-" + colDate + row1 + ")&" + q + " Menit" + q + ")";
@@ -539,7 +544,7 @@ function rumusDurasiKolom(colDate, refNow, row1) {
 
 // Tulis ulang rumus DURASI kolom H MONITORING TTR secara BATCH (chunk kontigu).
 // restoreIdx = array offset (0-based, relatif ttlRowAwal) yang perlu diisi ulang.
-function setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
+function _setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
   if (!restoreIdx || restoreIdx.length === 0) return 0;
   restoreIdx = restoreIdx.slice().sort(function (a, b) { return a - b; });
   var totalTulis = 0;
@@ -548,7 +553,7 @@ function setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
     var blokLen = endIdx - start + 1;
     var matriks = [];
     for (var r = 0; r < blokLen; r++) {
-      matriks.push([rumusDURASI(ttlRowAwal + start + r)]);
+      matriks.push([_rumusDURASI(ttlRowAwal + start + r)]);
     }
     ws.getRange(ttlRowAwal + start, 8, blokLen, 1).setFormulas(matriks);
     totalTulis += blokLen;
@@ -563,19 +568,19 @@ function setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
 }
 
 // Urutkan array baris by WORKZONE (A-Z, kosong di akhir) lalu INCIDENT (A-Z).
-function sortRows(rows, colSto, colIncident) {
+function _sortRows(rows, colSto, colIncident) {
   if (!rows) return rows;
   rows.sort(function (a, b) {
-    var a1 = val(a, colSto).toUpperCase();
-    var b1 = val(b, colSto).toUpperCase();
+    var a1 = _val(a, colSto).toUpperCase();
+    var b1 = _val(b, colSto).toUpperCase();
     var aE = a1 === "", bE = b1 === "";
     if (aE && bE) return 0;
     if (aE) return 1;  // WORKZONE kosong di akhir
     if (bE) return -1;
     if (a1 < b1) return -1;
     if (a1 > b1) return 1;
-    var a2 = val(a, colIncident).toUpperCase();
-    var b2 = val(b, colIncident).toUpperCase();
+    var a2 = _val(a, colIncident).toUpperCase();
+    var b2 = _val(b, colIncident).toUpperCase();
     if (a2 < b2) return -1;
     if (a2 > b2) return 1;
     return 0;
@@ -585,14 +590,14 @@ function sortRows(rows, colSto, colIncident) {
 
 // Kumpulkan seluruh baris tiket valid dari copas tket, sort WORKZONE A-Z, tulis ke MONITORING TTR.
 // Kembalian: { count, truncated } — truncated=true bila baris terbaca tak semuanya muat di blok.
-function kumpulDanTulisTTR(ws, colIncident, colSto) {
+function _kumpulDanTulisTTR(ws, colIncident, colSto) {
   var nilai = ws.getDataRange().getValues();
   var rowsFinal = [];
   for (var i = 1; i < nilai.length; i++) {
-    if (val(nilai[i], colIncident) !== "") rowsFinal.push(nilai[i]);
+    if (_val(nilai[i], colIncident) !== "") rowsFinal.push(nilai[i]);
   }
-  sortRows(rowsFinal, colSto, colIncident);
-  var tulis = tulisMonitoringTTR(rowsFinal, colIncident, colSto);
+  _sortRows(rowsFinal, colSto, colIncident);
+  var tulis = _tulisMonitoringTTR(rowsFinal, colIncident, colSto);
   return { count: tulis, truncated: rowsFinal.length > tulis };
 }
 
@@ -601,7 +606,7 @@ function kumpulDanTulisTTR(ws, colIncident, colSto) {
  * Hanya menyentuh kolom A-G → kolom H (DURASI), K1=NOW(), count block (I,K-Q),
  * dan blok REPORTING di bawah TIDAK diubah. Tidak insert/delete baris.
  */
-function tulisMonitoringTTR(rowsData, colIncident, colSto) {
+function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ws = ss.getSheetByName(TAB_TTR);
   if (!ws) {
@@ -645,7 +650,7 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
   // TANPA batas lastRow, supaya data tetap muncul walau sheet cuma berisi header.
   if (!adaBlok && rowsData.length > 0) {
     var targetAwal = TTR_START_ROW + Math.min(rowsData.length, TTR_MAKS_BARIS) - 1;
-    if (cekKosongBlok(ws, TTR_START_ROW, 1, targetAwal - TTR_START_ROW + 1, 7)) {
+    if (_cekKosongBlok(ws, TTR_START_ROW, 1, targetAwal - TTR_START_ROW + 1, 7)) {
       blokAkhir = targetAwal;
       adaBlok = true;
     } else if (scanRows > 0) {
@@ -668,7 +673,7 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
                                TTR_MAKS_BARIS + TTR_START_ROW - 1);
     var perluas = targetBawah - blokAkhir;
     if (perluas > 0) {
-      if (cekKosongBlok(ws, blokAkhir + 1, 1, perluas, 7)) {
+      if (_cekKosongBlok(ws, blokAkhir + 1, 1, perluas, 7)) {
         blokAkhir = targetBawah;
         kapasitas = blokAkhir - TTR_START_ROW + 1;
         adaBlok = true;
@@ -690,13 +695,13 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
     var row = (i < count) ? rowsData[i] : null;
     if (!row) { barisTulis.push(["", "", "", "", "", "", ""]); continue; }
     barisTulis.push([
-      val(row, colSto),                       // A = STO (WORKZONE)
-      val(row, colIncident),                  // B = NO TIKET (INCIDENT)
-      val(row, TTR_SRC_INET_GANGGUAN),        // C = INET GANGGUAN (SERVICE NO)
-      val(row, TTR_SRC_CUSTOMER_TYPE),        // D = CUSTOMER TYPE
-      valPreserveDate(row, TTR_SRC_REPORT_DATE), // E = REPORT DATE (biar Date, bukan teks)
-      valPreserveDate(row, TTR_SRC_MANJA),    // F = MANJA (BOOKING DATE)
-      val(row, TTR_SRC_TYPE_TIKET)            // G = TYPE TIKET (SERVICE TYPE)
+      _val(row, colSto),                       // A = STO (WORKZONE)
+      _val(row, colIncident),                  // B = NO TIKET (INCIDENT)
+      _val(row, TTR_SRC_INET_GANGGUAN),        // C = INET GANGGUAN (SERVICE NO)
+      _val(row, TTR_SRC_CUSTOMER_TYPE),        // D = CUSTOMER TYPE
+      _valPreserveDate(row, TTR_SRC_REPORT_DATE), // E = REPORT DATE (biar Date, bukan teks)
+      _valPreserveDate(row, TTR_SRC_MANJA),    // F = MANJA (BOOKING DATE)
+      _val(row, TTR_SRC_TYPE_TIKET)            // G = TYPE TIKET (SERVICE TYPE)
     ]);
   }
   if (barisTulis.length > 0) {
@@ -720,7 +725,7 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
       var isError = checkVal.charAt(0) === "#";
       if (fNow === "" || isError) indicesRestore.push(hi);
     }
-    hRestore = setRumusDurasiBatch(ws, TTR_START_ROW, indicesRestore);
+    hRestore = _setRumusDurasiBatch(ws, TTR_START_ROW, indicesRestore);
   }
   console.log("[BotInsera] TTR di-update: data=" + count + " baris (kapasitas blok " + kapasitas +
               ", scanRows=" + scanRows + ", rentang " + TTR_START_ROW + "-" + blokAkhir +
@@ -730,7 +735,7 @@ function tulisMonitoringTTR(rowsData, colIncident, colSto) {
 
 // Baca kolom M 'DATA PS' (1-based: 13) sekali untuk daftar SERVICE NO yang di-flag FFG.
 // READ-ONLY: tab DATA PS tidak pernah ditulis/diubah oleh script.
-function bacaSetDataPS() {
+function _bacaSetDataPS() {
   var ws = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("DATA PS");
   if (!ws) { console.log("[BotInsera] Tab 'DATA PS' tidak ditemukan, FFG flag default ke Not FFG."); return null; }
   var lastRow = ws.getLastRow();
@@ -747,18 +752,18 @@ function bacaSetDataPS() {
 // Kumpulkan seluruh baris tiket valid dari copas tket, sort WORKZONE A-Z,
 // lalu rebuild blok kiri semua tab di BLOK_REPORT (nilai statis).
 // Kembalian: { count, truncated } — truncated=true bila baris terbaca tak semuanya muat di blok.
-function kumpulDanTulisReport(ws, colIncident, colSto) {
+function _kumpulDanTulisReport(ws, colIncident, colSto) {
   var nilai = ws.getDataRange().getValues();
   var rowsFinal = [];
   for (var i = 1; i < nilai.length; i++) {
-    if (val(nilai[i], colIncident) !== "") rowsFinal.push(nilai[i]);
+    if (_val(nilai[i], colIncident) !== "") rowsFinal.push(nilai[i]);
   }
-  sortRows(rowsFinal, colSto, colIncident);
+  _sortRows(rowsFinal, colSto, colIncident);
 
-  var setDataPS = bacaSetDataPS();
+  var setDataPS = _bacaSetDataPS();
   var total = 0;
   for (var b = 0; b < BLOK_REPORT.length; b++) {
-    total += tulisBlokReport(BLOK_REPORT[b], rowsFinal, colIncident, colSto, setDataPS);
+    total += _tulisBlokReport(BLOK_REPORT[b], rowsFinal, colIncident, colSto, setDataPS);
   }
   return { count: total, truncated: rowsFinal.length > total };
 }
@@ -769,7 +774,7 @@ function kumpulDanTulisReport(ws, colIncident, colSto) {
  * mulai cfg.startRow. Batas atas = cfg.maxBaris. Blok deteksi/disimpulkan dari kolom
  * cfg.kolomNoTiket (nilai "INC..." atau rumus lama `='copas tket'!Axx`).
  */
-function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
+function _tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ws = ss.getSheetByName(cfg.tab);
   if (!ws) {
@@ -805,7 +810,7 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
   // TANPA batas lastRow, supaya data tetap muncul walau sheet cuma berisi header.
   if (!adaBlok && rowsData.length > 0) {
     var targetAwal = start + Math.min(rowsData.length, cfg.maxBaris) - 1;
-    if (cekKosongBlok(ws, start, 1, targetAwal - start + 1, jmlKolom)) {
+    if (_cekKosongBlok(ws, start, 1, targetAwal - start + 1, jmlKolom)) {
       blokAkhir = targetAwal;
       adaBlok = true;
     } else if (scanRows > 0) {
@@ -823,7 +828,7 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
     var targetBawah = Math.min(start + rowsData.length - 1, cfg.maxBaris + start - 1);
     var perluas = targetBawah - blokAkhir;
     if (perluas > 0) {
-      if (cekKosongBlok(ws, blokAkhir + 1, 1, perluas, jmlKolom)) {
+      if (_cekKosongBlok(ws, blokAkhir + 1, 1, perluas, jmlKolom)) {
         blokAkhir = targetBawah;
         kapasitas = blokAkhir - start + 1;
         adaBlok = true;
@@ -846,13 +851,13 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
       if (!row) { out.push(""); continue; }
       if (pem === "DURASI") { out.push(""); continue; }
       if (pem === "FFG") {
-        var svc = val(row, TTR_SRC_INET_GANGGUAN);
+        var svc = _val(row, TTR_SRC_INET_GANGGUAN);
         out.push((setDataPS && svc !== "" && setDataPS[svc] === true) ? "FFG" : "Not FFG");
         continue;
       }
       var srcIdx = (pem === -1) ? colSto : (pem === -2) ? colIncident : pem;
       var isDateCol = (srcIdx === TTR_SRC_REPORT_DATE || srcIdx === TTR_SRC_MANJA);
-      out.push(isDateCol ? valPreserveDate(row, srcIdx) : val(row, srcIdx));
+      out.push(isDateCol ? _valPreserveDate(row, srcIdx) : _val(row, srcIdx));
     }
     barisTulis.push(out);
   }
@@ -865,7 +870,7 @@ function tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
   if (cfg.rumusDurasi && kapasitas > 0) {
     var formulas = [];
     for (var fi = 0; fi < kapasitas; fi++) {
-      formulas.push([rumusDurasiKolom(cfg.rumusDurasi.dateCol, cfg.rumusDurasi.nowRef, start + fi)]);
+      formulas.push([_rumusDurasiKolom(cfg.rumusDurasi.dateCol, cfg.rumusDurasi.nowRef, start + fi)]);
     }
     ws.getRange(start, cfg.rumusDurasi.col, kapasitas, 1).setFormulas(formulas);
     hRestore = kapasitas;
@@ -909,7 +914,7 @@ function onEdit(e) {
     rebuildSemuaInternal(namaSheet === "DATA PS");
   } catch (err) {
     console.log("[BotInsera] onEdit rebuild ERROR: " + err);
-    catatRebuild("AUTO", 0, 0, String(err), namaSheet === "DATA PS");
+    _catatRebuild("AUTO", 0, 0, String(err), namaSheet === "DATA PS");
   }
 }
 
@@ -938,11 +943,11 @@ function rebuildSemuaInternal(ffgOnly, mode) {
               ") colIncident=" + colIncident + " colSto=" + colSto);
 
   var hasilTTR = { count: 0, truncated: false };
-  if (!ffgOnly) hasilTTR = kumpulDanTulisTTR(ws, colIncident, colSto);
-  var hasilReport = kumpulDanTulisReport(ws, colIncident, colSto);
+  if (!ffgOnly) hasilTTR = _kumpulDanTulisTTR(ws, colIncident, colSto);
+  var hasilReport = _kumpulDanTulisReport(ws, colIncident, colSto);
   console.log("[BotInsera] rebuild " + mode + " selesai: TTR=" + hasilTTR.count +
               " report=" + hasilReport.count + (ffgOnly ? " (FFG/REPORT only)" : ""));
-  catatRebuild(mode, hasilTTR.count, hasilReport.count, null, ffgOnly);
+  _catatRebuild(mode, hasilTTR.count, hasilReport.count, null, ffgOnly);
 }
 
 // ============ MENU (UNTUK REBUILD MANUAL SEKALI-KLIK) ============
@@ -1003,19 +1008,19 @@ function cekData() {
     var duplikat = 0;
     var kosong = 0;
     for (var r = 1; r < nilai.length; r++) {
-      var incv = val(nilai[r], colIncident);
+      var incv = _val(nilai[r], colIncident);
       if (incv === "") { kosong++; continue; }
       var kunci = incv.toUpperCase();
       if (set[kunci]) duplikat++; else set[kunci] = true;
     }
 
     var tabTtr = ss.getSheetByName(TAB_TTR);
-    var ttrRows = hitungBarisINC(tabTtr, 2, 3);
+    var ttrRows = _hitungBarisINC(tabTtr, 2, 3);
     var rincian = [];
     for (var bx = 0; bx < BLOK_REPORT.length; bx++) {
       var cfg = BLOK_REPORT[bx];
       var wsR = ss.getSheetByName(cfg.tab);
-      rincian.push(cfg.tab + "=" + hitungBarisINC(wsR, cfg.kolomNoTiket, cfg.startRow));
+      rincian.push(cfg.tab + "=" + _hitungBarisINC(wsR, cfg.kolomNoTiket, cfg.startRow));
     }
 
     var jml = Object.keys(set).length;
@@ -1026,7 +1031,7 @@ function cekData() {
       "\n• MONITORING TTR: " + ttrRows +
       "\n• " + rincian.join("\n• ");
 
-    catatLogSync({ WAKTU: new Date(), VERSI: VERSI, ROWS: jml,
+    _catatLogSync({ WAKTU: new Date(), VERSI: VERSI, ROWS: jml,
                    PENYEBAB: "PERIKSA: " + pesan.replace(/\n/g, " | ") });
     console.log("[BotInsera] cekData:\n" + pesan);
     if (ui) ui.alert("BotInsera", pesan, ui.ButtonSet.OK);
@@ -1036,7 +1041,7 @@ function cekData() {
 }
 
 // Hitung banyak baris (dari startRow) yang kolom `kol` berisi value diawali "INC".
-function hitungBarisINC(ws, kol, startRow) {
+function _hitungBarisINC(ws, kol, startRow) {
   if (!ws) return 0;
   var lastRow = Math.max(ws.getLastRow() - startRow + 1, 0);
   if (lastRow <= 0) return 0;
@@ -1055,7 +1060,7 @@ var KOLOM_LOG = ["WAKTU", "VERSI", "ROWS", "BARU", "UPDATE", "LEWAT", "HAPUS",
                  "TTR", "REPORT", "LENGKAP", "DURASI_MS", "DURASI_REPORT_MS",
                  "PENYEBAB", "GUARD", "TRUNCATED", "COL_INC", "COL_STO"];
 
-function siapkanTabLog() {
+function _siapkanTabLog() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ws = ss.getSheetByName(TAB_LOG);
   if (!ws) {
@@ -1068,9 +1073,9 @@ function siapkanTabLog() {
 }
 
 // Tulis satu baris riwayat ke tab LOG SYNC (gagal tidak menggagalkan sync).
-function catatLogSync(entry) {
+function _catatLogSync(entry) {
   try {
-    var ws = siapkanTabLog();
+    var ws = _siapkanTabLog();
     if (!ws) return;
     var baris = [];
     for (var i = 0; i < KOLOM_LOG.length; i++) {
@@ -1078,17 +1083,23 @@ function catatLogSync(entry) {
       baris.push(entry && entry[k] !== undefined ? entry[k] : "");
     }
     ws.appendRow(baris);
+    // Auto-trim: sisakan LOG_MAKS_BARIS baris terbaru saja (baris 1 = header).
+    var jmlRow = ws.getLastRow();
+    var hapus = jmlRow - 1 - LOG_MAKS_BARIS;
+    if (hapus > 0) {
+      ws.deleteRows(2, hapus);
+    }
   } catch (err) {
     console.log("[BotInsera] catatLogSync gagal: " + err);
   }
 }
 
 // Catat hasil rebuild manual/otomatis (mode = AUTO / AUTO-FFG / MANUAL).
-function catatRebuild(mode, ttr, report, err, ffgOnly) {
+function _catatRebuild(mode, ttr, report, err, ffgOnly) {
   try {
     var pesan = err ? "ERROR: " + err
       : ("REBUILD " + mode + " selesai" + (ffgOnly ? " (FFG/REPORT)" : ""));
-    catatLogSync({
+    _catatLogSync({
       WAKTU: new Date(),
       VERSI: VERSI + " [" + mode + "]",
       ROWS: 0,

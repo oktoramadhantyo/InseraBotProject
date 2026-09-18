@@ -48,6 +48,7 @@
   var countdownTimer = null; // handle per-detik update teks tombol Auto
   var nextReloadAt = 0;      // target epoch ms
   var lagiSync = false;
+  var visTimer = null;       // interval pengecekan visibilitas UI (halaman All Ticket List)
 
   function log(msg) {
     console.log("[BotInsera DEV]", msg);
@@ -80,36 +81,56 @@
 
   // Shared style tombol
   var TOMBOL_BASE =
-    "position:fixed;right:20px;z-index:99998;padding:0 24px;height:44px;display:flex;" +
-    "align-items:center;justify-content:center;" +
+    "width:190px;box-sizing:border-box;text-align:center;padding:0 24px;height:44px;" +
+    "display:flex;align-items:center;justify-content:center;" +
     "color:#fff;border:none;border-radius:8px;cursor:pointer;" +
     "font-size:14px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.25);" +
-    "width:190px;box-sizing:border-box;text-align:center;" +
     "opacity:1;background:#1565c0;";
 
   function buatTombol() {
     if (!document.body) { setTimeout(buatTombol, 200); return; }
+
+    // Kontainer utama UI — biar mudah disembunyikan saat halaman bukan All Ticket List.
+    var wadah = document.getElementById("binsera-ui");
+    if (!wadah) {
+      wadah = document.createElement("div");
+      wadah.id = "binsera-ui";
+      wadah.style.cssText =
+        "position:fixed;right:20px;bottom:20px;z-index:99998;display:flex;" +
+        "flex-direction:column;align-items:flex-end;gap:8px;";
+      document.body.appendChild(wadah);
+    }
 
     // Tombol manual Sync (inti) — dipasang duluan sebagai acuan.
     if (!document.getElementById("binsera-btn")) {
       btnKlik = document.createElement("button");
       btnKlik.id = "binsera-btn";
       btnKlik.textContent = "🔄 Sync ke Sheets";
-      btnKlik.style.cssText = TOMBOL_BASE + "bottom:20px;background:#1565c0;";
+      btnKlik.style.cssText = TOMBOL_BASE + "background:#1565c0;";
       btnKlik.addEventListener("click", function () { syncSekarang(false); });
-      document.body.appendChild(btnKlik);
-      console.log("[BotInsera DEV] Tombol Sync dipasang.");
+      wadah.appendChild(btnKlik);
+      log("Tombol Sync dipasang.");
     }
 
     // Tombol tunggal Auto (one-cycle: reload+sync).
     if (!document.getElementById("binsera-auto-btn")) {
       autoBtn = document.createElement("button");
       autoBtn.id = "binsera-auto-btn";
-      autoBtn.style.cssText = TOMBOL_BASE + "bottom:68px;";
+      autoBtn.style.cssText = TOMBOL_BASE;
       updateTeksAuto();
       autoBtn.addEventListener("click", toggleAuto);
-      document.body.appendChild(autoBtn);
+      wadah.appendChild(autoBtn);
     }
+  }
+
+  // Sembunyikan UI bila halaman bukan ALL TICKET LIST Insera (mis. halaman login,
+  // tab lain, atau belum login). Dipanggil di pasang + interval ringan (1,5 detik)
+  // supaya saat berpindah tab dalam SPA tombol otomatis hilang/ muncul.
+  function aturVisibilitas() {
+    var wadah = document.getElementById("binsera-ui");
+    if (!wadah) return;
+    var tampil = cekHalamanInsera();
+    wadah.style.display = tampil ? "flex" : "none";
   }
 
   function updateTeksAuto() {
@@ -608,6 +629,9 @@
 
     var retryCoba = 0;
     var syncLengkap = true;
+    var resAkhir = null;      // respon Apps Script terakhir (dipakai popup akhir)
+    var kirimAkhirOk = true;  // apakah respon diterima & ok
+    var alasanAkhir = "";     // penyebab terakhir (dipakai popup akhir)
 
     if (!cekHalamanInsera()) {
       log("Bukan halaman ALL TICKET LIST Insera, sync dibatalkan.");
@@ -690,12 +714,14 @@
     function cobaRetry(alasan) {
       if (!otomatis) {
         toast("⚠️ Sync tidak penuh: " + alasan + ".\nJalankan Sync manual untuk mencoba lagi.", 6000);
+        tampilPopupAkhir();
         akhiriSync();
         return;
       }
       if (retryCoba >= 2) {
         toast("🚫 Sync TIDAK penuh setelah 3 percobaan (" + alasan + ").\nCek jaringan/halaman, lalu jalankan Sync manual.", 7000);
         log("Retry habis karena: " + alasan);
+        tampilPopupAkhir();
         akhiriSync();
         return;
       }
@@ -708,31 +734,70 @@
       }, jeda);
     }
 
+    // Popup akhir saat sync ada masalah (GAP + PENYEBAB).
+    // Success penuh TIDAK memanggil fungsi ini.
+    function tampilPopupAkhir() {
+      var res = resAkhir;
+      if (!kirimAkhirOk || !res) {
+        window.alert("🚫 SYNC GAGAL\nPenyebab : " + (alasanAkhir || "gagal terhubung ke Apps Script."));
+        log("Popup AKHIR (gagal): " + (alasanAkhir || "-"));
+        return;
+      }
+      var insera = barisTerbaca;
+      var sheet = res.ttr || 0;
+      var baris = ["⚠️ DATA SPREADSHEET TIDAK AKURAT"];
+      if (res.guard) {
+        var lama = (res.jmlLama != null) ? res.jmlLama : 0;
+        baris.push("Di Insera : " + insera + " tiket");
+        baris.push("Di sheet  : " + lama + " tiket (lama, dipertahankan)");
+        baris.push("Penyebab  : jumlah tiket turun drastis — hapus massal dicegah (guard).");
+      } else {
+        baris.push("Di Insera : " + insera + " tiket");
+        baris.push("Di sheet  : " + sheet + " tiket");
+        baris.push("Gap       : " + Math.max(insera - sheet, 0) + " tiket");
+        baris.push("Penyebab  : " + (res.alasan || alasanAkhir || "data tidak sinkron dengan Insera."));
+      }
+      log("Popup AKHIR (tidak akurat): " + baris.join(" | "));
+      window.alert(baris.join("\n"));
+    }
+
     function selesaiKlik(res, ok) {
       if (!ok) {
         toast("Gagal: " + res, 5000);
         log("Auto-sync GAGAL: " + res);
+        kirimAkhirOk = false;
+        resAkhir = null;
+        alasanAkhir = "gagal terhubung ke Apps Script (" + res + ")";
         cobaRetry("kirim ke Apps Script gagal");
         return;
       }
       if (!res || !res.ok) {
         if (res && res.error === "TOKEN_SALAH") {
           toast("Token salah! Cocokkan ACCESS_TOKEN di userscript & code.gs", 5000);
+          alasanAkhir = "token salah (akses Apps Script ditolak)";
         } else {
           toast("Respon tidak dikenal: " + JSON.stringify(res).slice(0, 200), 5000);
+          alasanAkhir = "respon dari Apps Script tidak normal";
         }
+        kirimAkhirOk = false;
+        resAkhir = null;
         cobaRetry("respon dari Apps Script tidak normal");
         return;
       }
+
+      resAkhir = res;
+      kirimAkhirOk = true;
 
       var peringatan = (kolomIncidentTerpakai === -1)
         ? "\n\n⚠️ Pola kolom INCIDENT (-1) tidak ditemukan. Fallback ke indeks 0."
         : "";
       var masalah = [];
       if (!syncLengkap) masalah.push("halaman tak terbaca penuh (fetch sebagian gagal)");
+      if (res.guard) masalah.push("jumlah tiket turun drastis dari Insera (guard anti-hapus aktif)");
       if (res.truncated) masalah.push(res.alasan && String(res.alasan).indexOf("TRUNCATED") >= 0
         ? String(res.alasan)
         : "baris terpotong (kapasitas blok kurang / area bawah tidak kosong)");
+      if (masalah.length > 0) alasanAkhir = masalah.join(" ; ");
       var pesanMasalah = masalah.length > 0 ? "\n\n⚠️ " + masalah.join(" ; ") : "";
 
       var ringkas = "Baru: " + (res.baru || 0) +
@@ -792,6 +857,8 @@
 
   function pasang() {
     buatTombol();
+    aturVisibilitas();
+    if (!visTimer) visTimer = setInterval(aturVisibilitas, 1500);
     if (document.getElementById("binsera-btn") && document.getElementById("binsera-auto-btn")) {
       mulaiSemua();
       return null;

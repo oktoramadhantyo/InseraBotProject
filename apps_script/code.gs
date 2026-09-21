@@ -11,6 +11,11 @@
  *                 muncul walau sheet pernah dibersihkan (lastRow kecil/baris kosong).
  *        v2.4.3 - Fix hitung ulang kapasitas blok setelah seed sehingga data benar-benar ditulis.
  *        v2.4.4 - Penanda VERSI di doPost log & doGet untuk memastikan versi deployment yang jalan.
+ * v2.6 - Auto-rebuild ANDAL untuk paste MANUAL: installable onChange + waktu berkala
+ *        (jaring pengaman) + guard anti-dobel dari tulisan doPost (bot). Jalankan SEKALI
+ *        menu 'BotInsera' > "⚡ Pasang Auto-Rebuild" (fungsi pasangTrigger) -> paste manual
+ *        di tab 'copas tket' / edit 'DATA PS' otomatis me-rebuild MONITORING TTR +
+ *        REPORT JAKUT + REPORT JAKBAR + FFG tanpa klik rebuild manual lagi.
  * v2.5 - GUARD anti-hapus: bila INC yang diterima turun drastis saat lengkap=true, hapus/rewrite
  *        ditunda (data lama dipertahankan); monitoring lengkap+kapasitas via tab LOG SYNC (kolom
  *        GUARD/TRUNCATED/PENYEBAB/DURASI) yang dipangkas otomatis (LOG_MAKS_BARIS); truncation,
@@ -36,11 +41,15 @@
  *    Who has access: Anyone (dibatasi token di bawah)
  * 6. Salin URL Web App. Isi ke bagian USERS_URL di userscript.
  * 7. Set ACCESS_TOKEN bebas (password bersama antara script & userscript).
+ * 8. (PENTING untuk paste MANUAL) Setelah deploy, buka spreadsheet lalu klik
+ *    menu 'BotInsera' > "⚡ Pasang Auto-Rebuild" (atau jalankan fungsi pasangTrigger
+ *    di editor) dan ikuti Authorize. Ini memasang trigger onChange + berkala sehingga
+ *    paste manual di tab 'copas tket' / edit 'DATA PS' otomatis me-rebuild TTR + REPORT/FFG.
  */
 
 // ============ KONFIGURASI ============
 var ACCESS_TOKEN = "#Ez6KQZpzEYYXSeYWyZAGA7N";
-var VERSI = "v2.5.0"; // penanda versi: dipakai di log & doGet biar tahu kode mana yang jalan.
+var VERSI = "v2.6.0"; // penanda versi: dipakai di log & doGet biar tahu kode mana yang jalan.
 var TAB_TUJUAN = "copas tket";
 
 // Tab MONITORING TTR (blok data utama) — diisi ulang otomatis oleh script (nilai statis).
@@ -55,6 +64,20 @@ var LOG_MAKS_BARIS = 10;  // LOG SYNC dipangkas otomatis: sisakan N baris terbar
 // -> langkah HAPUS + rewrite DITUNDA (data baru tetap ditulis), ditandai di log.
 var GUARD_BATAS_PENYUSUTAN = 0.6;
 var COL_WORKZONE_DEFAULT = 9; // index kolom WORKZONE (0-based) di baris data copas tket; fallback.
+
+// ============ TRIGGER AUTO-REBUILD (AGAR PASTE MANUAL TIDAK PERLU KLIK REBUILD) ============
+// Instal SEKALI via menu 'BotInsera' > "⚡ Pasang Auto-Rebuild" (fungsi pasangTrigger):
+//  - onChange (installable): terpacu OLEH perubahan apa pun (termasuk paste) -> rebuild langsung.
+//  - berkala (time-based):   jaring pengaman tiap JEDA_TRIGGER_BERKALA_MENIT menit,
+//                            rebuild hanya bila data di copas tket / DATA PS berubah.
+// Guard: tulisan yang dilakukan SCRIPT SENDIRI (doPost bot / rebuild) tidak men-dobel-rebuild;
+// hanya edit MANUAL (atau pastikan perubahan) yang memicu. Simple onEdit tetap dipertahankan
+// sebagai jalur instan, semua jalur melewati kunci yang sama.
+var KUNCI_AUTO_REBUILD = "botinsera_last_auto_rebuild";
+var JENDELA_ABSORB_REBUILD_MS = 10000; // event beruntun (paste besar / onEdit+onChange) -> hanya 1 rebuild
+var KUNCI_SCRIPT_WRITE = "botinsera_script_write";
+var JENDELA_SKIP_SCRIPT_WRITE_MS = 10 * 60 * 1000; // 10 menit: abaikan event hasil tulisan script (doPost)
+var JEDA_TRIGGER_BERKALA_MENIT = 5;               // frekuensi jaring pengaman berkala
 
 // Pemetaan kolom data copas tket (index 0-based) ke kolom blok data TTR (1-based, kolom A=1).
 // A=STO(colSto) B=NO TIKET(colIncident) C=INET GANGGUAN(SERVICE NO=30) D=CUSTOMER TYPE(24)
@@ -154,7 +177,11 @@ function doPost(e) {
     var warnaBaru = WARNA_BARU;
     var warnaLama = WARNA_LAMA;
 
+    // Tandai bahwa tulisan berikut berasal dari SCRIPT (bot) -> onChange/onEdit akan
+    // melewati event ini (tidak dobel-rebuild; doPost sudah rebuild di dalam _tulisTiket).
+    _tandaiScriptTulis();
     var stat = _tulisTiket(rows, colIncident, colSto, lengkap, warnaBaru, warnaLama);
+    _bersihkanScriptTulis();
     out.ok = true;
     out.baru = stat.baru;
     out.update = stat.update;
@@ -199,6 +226,7 @@ function doPost(e) {
 
   } catch (err) {
     out.error = String(err);
+    _bersihkanScriptTulis();
     return ContentService.createTextOutput(JSON.stringify(out))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -881,41 +909,135 @@ function _tulisBlokReport(cfg, rowsData, colIncident, colSto, setDataPS) {
   return count;
 }
 
-// ============ REBUILD OTOMATIS (AUTO KETIKA COPAS TKET / DATA PS DIEDIT) ============
+// ============ REBUILD OTOMATIS (PASTE MANUAL DI COPAS TKET / EDIT DATA PS) ============
 
-// Auto-rebuild ketika tab 'copas tket' di-EDIT MANUAL oleh user (paste tiket,
-// tulis manual, hapus baris dsb.) ATAU tab 'DATA PS' di-update (rebuild REPORT/FFG saja).
-// Perubahan yang dilakukan SCRIPT — termasuk dari doPost bot sync — TIDAK memicu onEdit,
-// jadi tidak dobel-rebuild dengan bot.
-// Debounce pendek (5 detik, via CacheService): paste besar memicu beberapa event edit
-// beruntun dalam beberapa detik — event pertama yang rebuild, sisanya diabsorbsi.
+// Jalur 1: simple trigger onEdit (instan, hanya user-edit yang memicu — bukan script).
 function onEdit(e) {
   var range = e ? e.range : null;
   if (!range || !range.getSheet()) return;
   var namaSheet = range.getSheet().getName();
   if (namaSheet !== TAB_TUJUAN && namaSheet !== "DATA PS") return;
   if (range.getRow() < 2) return;
+  _autoRebuildGuard(namaSheet === "DATA PS", "AUTO-EDIT");
+}
 
+// Jalur 2: installable onChange (dipasang pasangTrigger). Terpacu oleh SEMUA perubahan,
+// termasuk paste besar yang kadang tidak memicu onEdit. Dipasang supaya andal tanpa klik.
+function autoRebuildOnChange(e) {
+  var ss = e && e.source;
+  if (!ss) return;
+  var namaSheet = "";
+  try { namaSheet = ss.getActiveSheet().getName(); } catch (err) { /* ignore */ }
+  if (namaSheet !== TAB_TUJUAN && namaSheet !== "DATA PS") return;
+  _autoRebuildGuard(namaSheet === "DATA PS", "AUTO-CHANGE");
+}
+
+// Jalur 3: trigger berkala (jaring pengaman) — rebuild hanya bila data benar-benar berubah.
+function autoRebuildBerkala() {
+  var berubahTiket = _sheetBerubahSejakRun(TAB_TUJUAN, "fp_copas_tket");
+  var berubahDataPS = _sheetBerubahSejakRun("DATA PS", "fp_data_ps");
+  if (berubahTiket || berubahDataPS) {
+    try {
+      rebuildSemuaInternal(false, "BERKALA");
+    } catch (err) {
+      console.log("[BotInsera] BERKALA rebuild ERROR: " + err);
+      _catatRebuild("BERKALA", 0, 0, String(err), false);
+    }
+  }
+}
+
+// Gerbang bersama semua jalur auto-rebuild: lewati event dari tulisan script sendiri,
+// lalu dedup event beruntun (paste besar / onEdit+onChange yang terpacu bersamaan).
+function _autoRebuildGuard(ffgOnly, mode) {
+  if (_baruSajaScriptTulis()) return;
+  if (!_ambilKunciAutorebuild()) return;
+  try {
+    rebuildSemuaInternal(ffgOnly, mode);
+  } catch (err) {
+    console.log("[BotInsera] " + mode + " rebuild ERROR: " + err);
+    _catatRebuild(mode, 0, 0, String(err), ffgOnly);
+  }
+}
+
+// Amankan kunci debounce: hanya 1 call terpacu dalam JENDELA_ABSORB_REBUILD_MS.
+function _ambilKunciAutorebuild() {
   try {
     var cache = CacheService.getScriptCache();
-    var kunci = "lastAutoRebuild";
     var now = Date.now();
-    var last = cache.get(kunci);
-    if (last && (now - parseInt(last, 10)) < 5000) {
-      cache.put(kunci, String(now), 60);
-      return; // diserap (edit beruntun dalam paste besar)
-    }
-    cache.put(kunci, String(now), 60);
+    var last = cache.get(KUNCI_AUTO_REBUILD);
+    var ok = !(last && (now - parseInt(last, 10)) < JENDELA_ABSORB_REBUILD_MS);
+    cache.put(KUNCI_AUTO_REBUILD, String(now), 60);
+    return ok;
   } catch (err) {
-    // CacheService tak tersedia => tetap rebuild (tanpa debounce).
+    return true; // CacheService tak tersedia => tetap rebuild.
   }
+}
 
+// Penanda "periode tulisan script" (doPost). onChange/onEdit memakai ini untuk tahu
+// bahwa perubahan yang datang saat ini berasal dari bot — bukan edit manual user.
+function _tandaiScriptTulis() {
   try {
-    rebuildSemuaInternal(namaSheet === "DATA PS");
+    CacheService.getScriptCache().put(KUNCI_SCRIPT_WRITE, String(Date.now()), 1200);
+  } catch (err) { /* ignore */ }
+}
+
+function _bersihkanScriptTulis() {
+  try {
+    CacheService.getScriptCache().remove(KUNCI_SCRIPT_WRITE);
+  } catch (err) { /* ignore */ }
+}
+
+function _baruSajaScriptTulis() {
+  try {
+    var t = CacheService.getScriptCache().get(KUNCI_SCRIPT_WRITE);
+    return !!(t && (Date.now() - parseInt(t, 10)) < JENDELA_SKIP_SCRIPT_WRITE_MS);
   } catch (err) {
-    console.log("[BotInsera] onEdit rebuild ERROR: " + err);
-    _catatRebuild("AUTO", 0, 0, String(err), namaSheet === "DATA PS");
+    return false;
   }
+}
+
+// Deteksi pertukaran isi sheet sejak run berkala sebelumnya (versi ringan = fingerprint).
+function _sheetBerubahSejakRun(namaTab, propsKey) {
+  var ws = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(namaTab);
+  if (!ws) return false;
+  try {
+    var fp = _fingerprintSheet(ws);
+    var props = PropertiesService.getScriptProperties();
+    var prev = props.getProperty(propsKey);
+    props.setProperty(propsKey, fp);
+    return prev === null || prev !== fp;
+  } catch (err) {
+    return true; // gagal hitung fingerprint => rebuild saja (aman).
+  }
+}
+
+// Fingerprint isi seluruh sheet (nilai TAMPILAN) jadi string hash pendek.
+function _fingerprintSheet(ws) {
+  var lastRow = Math.max(ws.getLastRow(), 1);
+  var lastCol = Math.max(ws.getLastColumn(), 1);
+  if (lastRow <= 1) return "R1C" + lastCol;
+  var vals = ws.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+  var dig = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    JSON.stringify(vals) + "|" + lastRow + "|" + lastCol
+  );
+  return dig.map(function (b) { return (b < 0 ? b + 256 : b).toString(16); }).join("");
+}
+
+// Deteksi indeks kolom INCIDENT & WORKZONE dari baris header (0-based).
+// INCIDENT: ambil kejadian PERTAMA (kolom INCIDENT selalu paling awal / dekat awal header).
+function _deteksiKolomKunci(header) {
+  var colIncident = -1;
+  var colSto = -1;
+  var lastCol = header ? header.length : 0;
+  for (var i = 0; i < lastCol; i++) {
+    var h = String(header[i]).toUpperCase();
+    if (colIncident < 0 && /INCIDENT/.test(h)) colIncident = i;
+    if (colSto < 0 && /WORKZONE/.test(h)) colSto = i;
+  }
+  if (colIncident < 0) colIncident = 0;
+  if (colSto < 0) colSto = COL_WORKZONE_DEFAULT;
+  return { colIncident: colIncident, colSto: colSto };
 }
 
 // Baca isi copas tket terkini, deteksi kolom INCIDENT & WORKZONE dari header,
@@ -929,16 +1051,9 @@ function rebuildSemuaInternal(ffgOnly, mode) {
   if (!ws) return;
   var lastCol = Math.max(ws.getLastColumn(), 1);
   var header = ws.getRange(1, 1, 1, lastCol).getValues()[0];
-  var colIncident = -1;
-  var colSto = -1;
-  for (var i = 0; i < lastCol; i++) {
-    var h = String(header[i]).toUpperCase();
-    // Ambil kejadian PERTAMA (kolom INCIDENT selalu paling awal / dekat awal header).
-    if (colIncident < 0 && /INCIDENT/.test(h)) colIncident = i;
-    if (colSto < 0 && /WORKZONE/.test(h)) colSto = i;
-  }
-  if (colIncident < 0) colIncident = 0;
-  if (colSto < 0) colSto = COL_WORKZONE_DEFAULT;
+  var deteksi = _deteksiKolomKunci(header);
+  var colIncident = deteksi.colIncident;
+  var colSto = deteksi.colSto;
   console.log("[BotInsera] rebuild (" + mode + (ffgOnly ? ", FFG/REPORT only" : "") +
               ") colIncident=" + colIncident + " colSto=" + colSto);
 
@@ -950,6 +1065,53 @@ function rebuildSemuaInternal(ffgOnly, mode) {
   _catatRebuild(mode, hasilTTR.count, hasilReport.count, null, ffgOnly);
 }
 
+// ============ PASANG TRIGGER AUTO-REBUILD (SEKALI SAJA PER SPREADSHEET) ============
+
+// Pasang trigger onChange (paste manual -> rebuild langsung) + berkala (jaring pengaman).
+// IDEMPOTEN: jalankan ulang kapan pun — trigger lama ber-handler sama dihapus dulu.
+function pasangTrigger() {
+  _hapusTriggerHandler("autoRebuildOnChange");
+  _hapusTriggerHandler("autoRebuildBerkala");
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var id = ss.getId();
+  ScriptApp.newTrigger("autoRebuildOnChange")
+    .forSpreadsheet(id)
+    .onChange()
+    .create();
+  ScriptApp.newTrigger("autoRebuildBerkala")
+    .timeBased()
+    .everyMinutes(JEDA_TRIGGER_BERKALA_MENIT)
+    .create();
+  _catatRebuild("PASANG-TRIGGER", 0, 0, null, false);
+  console.log("[BotInsera] pasangTrigger: onChange + berkala(" +
+              JEDA_TRIGGER_BERKALA_MENIT + " menit) terpasang (spreadsheet: " + ss.getName() + ").");
+  return "onChange + berkala " + JEDA_TRIGGER_BERKALA_MENIT + " menit";
+}
+
+function pasangDariMenu() {
+  var ui;
+  try { ui = SpreadsheetApp.getUi(); } catch (err) { /* tanpa UI */ }
+  try {
+    var rincian = pasangTrigger();
+    if (ui) ui.alert("BotInsera",
+        "Trigger terpasang: " + rincian +
+        "\n\nAuto-rebuild AKTIF:\n- Paste/ubah manual di 'copas tket' atau 'DATA PS' otomatis me-rebuild MONITORING TTR + REPORT JAKUT + REPORT JAKBAR + FFG.\n- Jaring pengaman berkala " + JEDA_TRIGGER_BERKALA_MENIT + " menit (hanya bila data berubah).\n\nStatus auto-rebuild tercatat di tab 'LOG SYNC'.",
+        ui.ButtonSet.OK);
+  } catch (err) {
+    if (ui) ui.alert("BotInsera", "Pasang trigger GAGAL: " + err, ui.ButtonSet.OK);
+  }
+}
+
+// Hapus semua trigger dengan nama handler `namaHandler` (hindari dobel saat install ulang).
+function _hapusTriggerHandler(namaHandler) {
+  var all = ScriptApp.getProjectTriggers();
+  for (var i = all.length - 1; i >= 0; i--) {
+    if (all[i].getHandlerFunction() === namaHandler) {
+      ScriptApp.deleteTrigger(all[i]);
+    }
+  }
+}
+
 // ============ MENU (UNTUK REBUILD MANUAL SEKALI-KLIK) ============
 
 function onOpen() {
@@ -957,6 +1119,7 @@ function onOpen() {
     SpreadsheetApp.getUi()
       .createMenu("BotInsera")
       .addItem("⟳ Rebuild Semua (TTR + REPORT + FFG)", "rebuildDariMenu")
+      .addItem("⚡ Pasang Auto-Rebuild (onChange + Berkala)", "pasangDariMenu")
       .addItem("Cek Konsistensi Data", "cekData")
       .addToUi();
   } catch (err) {
@@ -993,15 +1156,9 @@ function cekData() {
   try {
     var lastCol = Math.max(ws.getLastColumn(), 1);
     var header = ws.getRange(1, 1, 1, lastCol).getValues()[0];
-    var colIncident = -1;
-    var colSto = -1;
-    for (var i = 0; i < lastCol; i++) {
-      var h = String(header[i]).toUpperCase();
-      if (colIncident < 0 && /INCIDENT/.test(h)) colIncident = i;
-      if (colSto < 0 && /WORKZONE/.test(h)) colSto = i;
-    }
-    if (colIncident < 0) colIncident = 0;
-    if (colSto < 0) colSto = COL_WORKZONE_DEFAULT;
+    var deteksi = _deteksiKolomKunci(header);
+    var colIncident = deteksi.colIncident;
+    var colSto = deteksi.colSto;
 
     var nilai = ws.getDataRange().getValues();
     var set = {};

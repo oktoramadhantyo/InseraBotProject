@@ -11,6 +11,17 @@
  *                 muncul walau sheet pernah dibersihkan (lastRow kecil/baris kosong).
  *        v2.4.3 - Fix hitung ulang kapasitas blok setelah seed sehingga data benar-benar ditulis.
  *        v2.4.4 - Penanda VERSI di doPost log & doGet untuk memastikan versi deployment yang jalan.
+ * v2.8 - Kolom I (TICKET ID GAMAS) di MONITORING TTR & LAPORAN WA diisi dari copas tket
+ *        kolom M (deteksi dari header, fallback index 12); kosong -> "-".
+ *        Kolom manual J (STATUS GAMAS) / K (STATUS) / L (HASIL UKUR) TIDAK diedit tapi
+ *        IKUT DIPINDAH per NO TIKET saat baris di-sort ulang (re-key). Guard: bila J-L
+ *        berisi formula COUNTIFS (blok rekap lama), J-L dilewati & hanya I yang ditulis.
+ *        Rumus DURASI kini ADAPTIF (pola & sel NOW() dideteksi dari rumus H yang ada,
+ *        mis. K$1 / $O$1) supaya aman terhadap penyisipan kolom oleh mentor.
+ * v2.7 - Blok LAPORAN WA: tab baru berkonsep SAMA dengan MONITORING TTR (A-G statis +
+ *        rumus DURASI H) ikut di-rebuild tiap sync & auto-rebuild. Kolom I (NO WA) berumus
+ *        dari sheet lain -> TIDAK disentuh. Logika TTR direfaktor jadi generik
+ *        (_kumpulDanTulisBlokMonitoring/_tulisBlokMonitoring) dipakai untuk kedua tab.
  * v2.6 - Auto-rebuild ANDAL untuk paste MANUAL: installable onChange + waktu berkala
  *        (jaring pengaman) + guard anti-dobel dari tulisan doPost (bot). Jalankan SEKALI
  *        menu 'BotInsera' > "⚡ Pasang Auto-Rebuild" (fungsi pasangTrigger) -> paste manual
@@ -49,13 +60,27 @@
 
 // ============ KONFIGURASI ============
 var ACCESS_TOKEN = "#Ez6KQZpzEYYXSeYWyZAGA7N";
-var VERSI = "v2.6.0"; // penanda versi: dipakai di log & doGet biar tahu kode mana yang jalan.
+var VERSI = "v2.8.0"; // penanda versi: dipakai di log & doGet biar tahu kode mana yang jalan.
 var TAB_TUJUAN = "copas tket";
 
 // Tab MONITORING TTR (blok data utama) — diisi ulang otomatis oleh script (nilai statis).
 var TAB_TTR = "MONITORING TTR";
 var TTR_START_ROW = 3;    // baris pertama blok data TTR (baris 1 = judul, baris 2 = header).
 var TTR_MAKS_BARIS = 1000000; // praktis tanpa batas; aman karena ekspansi tetap dicek ruang kosong (cekKosongBlok).
+
+// Tab LAPORAN WA — konsep SAMA seperti MONITORING TTR: A=STO B=NO TIKET C=INET GANGGUAN
+// D=CUSTOMER TYPE E=REPORT DATE F=MANJA G=TYPE TIKET, H=rumus DURASI, I=TICKET ID GAMAS,
+// J=STATUS GAMAS K=STATUS L=HASIL UKUR (J-L manual, hanya ikut dipindah per NO TIKET).
+// Kolom M ke kanan (mis. NO WA berumus) TIDAK disentuh script.
+var TAB_WA = "LAPORAN WA";
+var WA_START_ROW = 3;
+var WA_MAKS_BARIS = 1000000;
+
+// Daftar blok monitoring yang direbuild dari copas tket (nilai statis + rumus DURASI H).
+// Urutan = urutan pengerjaan. cfg.tab tidak ada di spreadsheet -> dilewati (log saja).
+var CFG_TTR = { tab: TAB_TTR, startRow: TTR_START_ROW, maksBaris: TTR_MAKS_BARIS, label: "MONITORING TTR" };
+var CFG_WA  = { tab: TAB_WA,  startRow: WA_START_ROW,  maksBaris: WA_MAKS_BARIS,  label: "LAPORAN WA" };
+var CFG_BLOK_MONITORING = [CFG_TTR, CFG_WA];
 
 // ============ LOG RIWAYAT SYNC & GUARD ANTI-HAPUS ============
 var TAB_LOG = "LOG SYNC"; // tab riwayat tiap sync (auto-dibuat bila belum ada).
@@ -82,11 +107,13 @@ var JEDA_TRIGGER_BERKALA_MENIT = 5;               // frekuensi jaring pengaman b
 // Pemetaan kolom data copas tket (index 0-based) ke kolom blok data TTR (1-based, kolom A=1).
 // A=STO(colSto) B=NO TIKET(colIncident) C=INET GANGGUAN(SERVICE NO=30) D=CUSTOMER TYPE(24)
 // E=REPORT DATE(REPORTED DATE=3) F=MANJA(BOOKING DATE=17) G=TYPE TIKET(SERVICE TYPE=7)
+// I=TICKET ID GAMAS (kolom M copas tket; dideteksi dari header, fallback index di bawah)
 var TTR_SRC_INET_GANGGUAN = 30;
 var TTR_SRC_CUSTOMER_TYPE = 24;
 var TTR_SRC_REPORT_DATE   = 3;
 var TTR_SRC_MANJA         = 17;
 var TTR_SRC_TYPE_TIKET    = 7;
+var TTR_SRC_TICKET_ID_GAMAS = 12; // kolom M 'copas tket' (0-based); fallback bila header tak terbaca
 
 // Blok kiri tab laporan (REPORT JAKUT / REPORT JAKBAR / FFG) — ikut di-rebuild dari copas tket
 // setiap sync (nilai statis, sort WORKZONE A-Z), tepat seperti blok data MONITORING TTR.
@@ -168,7 +195,7 @@ function doPost(e) {
 
     if (rows.length === 0) {
       out.ok = true;
-      out.baru = 0; out.update = 0; out.lewat = 0; out.total = 0; out.ttr = 0; out.report = 0;
+      out.baru = 0; out.update = 0; out.lewat = 0; out.total = 0; out.ttr = 0; out.report = 0; out.wa = 0;
       return ContentService.createTextOutput(JSON.stringify(out))
         .setMimeType(ContentService.MimeType.JSON);
     }
@@ -189,12 +216,14 @@ function doPost(e) {
     out.hapus = stat.hapus || 0;
     out.ttr = stat.ttr || 0;
     out.report = stat.report || 0;
-    out.truncated = !!(stat.ttrTruncated || stat.reportTruncated);
+    out.wa = stat.wa || 0;
+    out.truncated = !!(stat.ttrTruncated || stat.reportTruncated || stat.waTruncated);
     out.guard = !!stat.guard;
     out.jmlLama = stat.jmlLama || 0;
     var alasan = [];
     if (stat.alasan) alasan.push(String(stat.alasan));
     if (stat.ttrTruncated) alasan.push("TRUNCATED: baris MONITORING TTR lebih sedikit dari data (ruang bawah padat)");
+    if (stat.waTruncated) alasan.push("TRUNCATED: baris LAPORAN WA lebih sedikit dari data (ruang bawah padat)");
     if (stat.reportTruncated) alasan.push("TRUNCATED: baris REPORT/FFG lebih sedikit dari data (ruang bawah padat)");
     out.alasan = alasan.length > 0 ? alasan.join(" ; ") : "";
     out.durasi_ms = Date.now() - mulaiTotal;
@@ -211,6 +240,7 @@ function doPost(e) {
       HAPUS: stat.hapus || 0,
       TTR: stat.ttr || 0,
       REPORT: stat.report || 0,
+      WA: stat.wa || 0,
       LENGKAP: lengkap ? "YA" : "TIDAK",
       DURASI_MS: out.durasi_ms,
       DURASI_REPORT_MS: stat.durasiReportMs || 0,
@@ -298,8 +328,9 @@ function _tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLam
     }
   }
 
-  var stat = { baru: 0, update: 0, lewat: 0, hapus: 0, ttr: 0, report: 0,
-               ttrTruncated: false, reportTruncated: false, guard: false, alasan: "", jmlLama: 0, durasiReportMs: 0 };
+  var stat = { baru: 0, update: 0, lewat: 0, hapus: 0, ttr: 0, report: 0, wa: 0,
+               ttrTruncated: false, reportTruncated: false, waTruncated: false,
+               guard: false, alasan: "", jmlLama: 0, durasiReportMs: 0 };
   var barisBaru = [];
   var barisUpdate = {};
 
@@ -479,10 +510,15 @@ function _tulisTiket(rowsBaru, colIncident, colSto, lengkap, warnaBaru, warnaLam
   }
   // Bila tidak lengkap: JANGAN hapus & JANGAN sort ulang seluruh sheet (safety — data belum tentu lengkap).
 
-  // (6) Rebuild MONITORING TTR dari data copas tket terkini (selalu di-sort WORKZONE A-Z).
+  // (6) Rebuild MONITORING TTR + LAPORAN WA dari data copas tket terkini
+  //     (selalu di-sort WORKZONE A-Z; kolom I LAPORAN WA / NO WA tidak disentuh).
   var hasilTTR = _kumpulDanTulisTTR(ws, colIncident, colSto);
   stat.ttr = hasilTTR.count;
   stat.ttrTruncated = hasilTTR.truncated;
+
+  var hasilWA = _kumpulDanTulisWA(ws, colIncident, colSto);
+  stat.wa = hasilWA.count;
+  stat.waTruncated = hasilWA.truncated;
 
   // (7) Rebuild blok kiri REPORT JAKUT / REPORT JAKBAR / FFG (nilai statis, READ-ONLY thd DATA PS).
   var mulaiReport = Date.now();
@@ -572,8 +608,11 @@ function _rumusDurasiKolom(colDate, refNow, row1) {
 
 // Tulis ulang rumus DURASI kolom H MONITORING TTR secara BATCH (chunk kontigu).
 // restoreIdx = array offset (0-based, relatif ttlRowAwal) yang perlu diisi ulang.
-function _setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
+// pola = { colDate, refNow } hasil _deteksiPolaDurasi (default E / K$1).
+function _setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx, pola) {
   if (!restoreIdx || restoreIdx.length === 0) return 0;
+  var colDate = (pola && pola.colDate) ? pola.colDate : "E";
+  var refNow = (pola && pola.refNow) ? pola.refNow : "K$1";
   restoreIdx = restoreIdx.slice().sort(function (a, b) { return a - b; });
   var totalTulis = 0;
   var start = restoreIdx[0], prev = restoreIdx[0];
@@ -581,7 +620,7 @@ function _setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
     var blokLen = endIdx - start + 1;
     var matriks = [];
     for (var r = 0; r < blokLen; r++) {
-      matriks.push([_rumusDURASI(ttlRowAwal + start + r)]);
+      matriks.push([_rumusDurasiKolom(colDate, refNow, ttlRowAwal + start + r)]);
     }
     ws.getRange(ttlRowAwal + start, 8, blokLen, 1).setFormulas(matriks);
     totalTulis += blokLen;
@@ -593,6 +632,87 @@ function _setRumusDurasiBatch(ws, ttlRowAwal, restoreIdx) {
   }
   flush(prev);
   return totalTulis;
+}
+
+// Cari indeks kolom (0-based) dari nama header pada baris pertama worksheet `ws`.
+// return null bila tidak ditemukan (pemanggil pakai fallback).
+function _cariKolomHeader(ws, namaHeader) {
+  var lastCol = ws.getLastColumn();
+  if (!lastCol || lastCol < 1) return null;
+  var hdr = ws.getRange(1, 1, 1, lastCol).getValues()[0] || [];
+  var target = String(namaHeader || "").trim().toUpperCase();
+  for (var i = 0; i < hdr.length; i++) {
+    if (String(hdr[i] === undefined || hdr[i] === null ? "" : hdr[i]).trim().toUpperCase() === target) return i;
+  }
+  return null;
+}
+
+// Ambil TICKET ID GAMAS dari baris copas tket (index 0-based, hasil deteksi header).
+// Kosong -> "-". Dipakai kolom I MONITORING TTR & LAPORAN WA.
+function _gamasDariBaris(row, colGamas) {
+  var idx = (colGamas === undefined || colGamas === null) ? TTR_SRC_TICKET_ID_GAMAS : colGamas;
+  var v = (row && idx >= 0 && row.length > idx && row[idx] !== undefined && row[idx] !== null)
+    ? String(row[idx]).trim() : "";
+  return v === "" ? "-" : v;
+}
+
+// Deteksi pola rumus DURASI (kolom H) dari sheet tujuan supaya tahu:
+//  - kolom tanggal (colDate, mis. "E")
+//  - acuan NOW() (refNow, mis. "K$1" ATAU "$O$1" bila mentor menggeser kolom)
+// Dipanggil SEBELUM rumus H ditulis ulang; hasilnya dipakai untuk restore H + isi sel NOW.
+// Kembalian default { colDate: "E", refNow: "K$1" } bila belum ada rumus H sama sekali.
+function _deteksiPolaDurasi(ws, startRow, kapasitas) {
+  var pola = { colDate: "E", refNow: "K$1" };
+  if (kapasitas > 0) {
+    try {
+      var f = ws.getRange(startRow, 8, kapasitas, 1).getFormulas();
+      for (var i = 0; i < f.length; i++) {
+        var s = f[i][0];
+        if (typeof s !== "string" || s.charAt(0) !== "=") continue;
+        // Bentuk: =IF(ISBLANK(<col><row>);...INT((<ref>-<col><row>)*24)...MINUTE(<ref>-...)...
+        var mDate = /ISBLANK\((\$?[A-Z]{1,3}\$?\d+)\)/i.exec(s);
+        var mRef = /INT\(\((\$?[A-Z]{1,3}\$?\d+)-/i.exec(s);
+        if (mDate && mRef) {
+          pola.colDate = mDate[1].replace(/\$/g, "").replace(/\d+$/, "");
+          pola.refNow = mRef[1];
+          return pola;
+        }
+      }
+    } catch (e) { /* fallback default */ }
+  }
+  // Fallback: belum ada rumus H (sheet baru) -> cari sel =NOW() di baris 1 (mis. K1/O1)
+  // supaya tidak mengisi sel NOW di tempat yang salah saat mentor memindahkannya.
+  try {
+    var lastCol = Math.max(ws.getLastColumn() || 1, 1);
+    var f1 = ws.getRange(1, 1, 1, lastCol).getFormulas()[0] || [];
+    for (var c = 0; c < f1.length; c++) {
+      var fc = f1[c];
+      if (typeof fc === "string" && /NOW\s*\(/i.test(fc)) {
+        var huruf = "";
+        var n = c + 1;
+        while (n > 0) { var r0 = (n - 1) % 26; huruf = String.fromCharCode(65 + r0) + huruf; n = Math.floor((n - 1) / 26); }
+        pola.refNow = huruf + "$1";
+        return pola;
+      }
+    }
+  } catch (e2) { /* fallback default */ }
+  return pola;
+}
+
+// Isi sel acuan NOW() (mis. K$1 / $O$1) dengan =NOW() HANYA bila selnya kosong.
+// Tidak pernah menimpa sel yang sudah terisi (milik user / sudah diisi script).
+function _isiSelNow(ws, refNow) {
+  try {
+    var m = /^\$?([A-Z]{1,3})\$?(\d+)$/.exec(String(refNow || "").trim());
+    if (!m) return false;
+    var col = 0;
+    var huruf = m[1].toUpperCase();
+    for (var i = 0; i < huruf.length; i++) col = col * 26 + (huruf.charCodeAt(i) - 64);
+    var sel = ws.getRange(parseInt(m[2], 10), col, 1, 1);
+    var v = sel.getValue();
+    if (v === "" || v === null) { sel.setFormula("=NOW()"); return true; }
+  } catch (e) { /* ignore */ }
+  return false;
 }
 
 // Urutkan array baris by WORKZONE (A-Z, kosong di akhir) lalu INCIDENT (A-Z).
@@ -616,51 +736,83 @@ function _sortRows(rows, colSto, colIncident) {
   return rows;
 }
 
-// Kumpulkan seluruh baris tiket valid dari copas tket, sort WORKZONE A-Z, tulis ke MONITORING TTR.
+// Kumpulkan seluruh baris tiket valid dari copas tket, sort WORKZONE A-Z, tulis ke blok
+// monitoring pada cfg.tab (MONITORING TTR / LAPORAN WA).
 // Kembalian: { count, truncated } — truncated=true bila baris terbaca tak semuanya muat di blok.
-function _kumpulDanTulisTTR(ws, colIncident, colSto) {
+function _kumpulDanTulisBlokMonitoring(ws, colIncident, colSto, cfg) {
+  // Tab belum ada -> jangan dianggap truncated (biar userscript tidak retry/peringati
+  // terus-menerus hanya karena satu tab belum dibuat).
+  if (!SpreadsheetApp.getActiveSpreadsheet().getSheetByName(cfg.tab)) {
+    console.log("[BotInsera] Tab '" + cfg.tab + "' belum ada, rebuild " + cfg.label + " dilewati.");
+    return { count: 0, truncated: false };
+  }
   var nilai = ws.getDataRange().getValues();
+  // Kolom TICKET ID GAMAS di copas tket: deteksi dari header (baris 1), fallback index 12 (kolom M).
+  var colGamas = _cariKolomHeader(ws, "TICKET ID GAMAS");
+  if (colGamas === null || colGamas === undefined) colGamas = TTR_SRC_TICKET_ID_GAMAS;
   var rowsFinal = [];
   for (var i = 1; i < nilai.length; i++) {
     if (_val(nilai[i], colIncident) !== "") rowsFinal.push(nilai[i]);
   }
   _sortRows(rowsFinal, colSto, colIncident);
-  var tulis = _tulisMonitoringTTR(rowsFinal, colIncident, colSto);
+  var tulis = _tulisBlokMonitoring(cfg, rowsFinal, colIncident, colSto, colGamas);
   return { count: tulis, truncated: rowsFinal.length > tulis };
 }
 
+function _kumpulDanTulisTTR(ws, colIncident, colSto) {
+  return _kumpulDanTulisBlokMonitoring(ws, colIncident, colSto, CFG_TTR);
+}
+
+function _kumpulDanTulisWA(ws, colIncident, colSto) {
+  return _kumpulDanTulisBlokMonitoring(ws, colIncident, colSto, CFG_WA);
+}
+
 /**
- * Tulis ulang blok data utama MONITORING TTR (kolom A-G, nilai statis).
- * Hanya menyentuh kolom A-G → kolom H (DURASI), K1=NOW(), count block (I,K-Q),
- * dan blok REPORTING di bawah TIDAK diubah. Tidak insert/delete baris.
+ * Tulis ulang blok data monitoring pada cfg.tab (MONITORING TTR & LAPORAN WA).
+ * Yang disentuh script:
+ *   A-G  = nilai statis dari copas tket
+ *   H    = rumus DURASI (hanya bila kosong/error; pola & sel NOW() dideteksi dari
+ *          rumus H yang sudah ada, default E vs K$1)
+ *   I    = TICKET ID GAMAS dari copas tket (kosong -> "-"); dilewati bila header I
+ *          bukan "TICKET ID GAMAS" ATAU kolom I berisi formula (mis. NO WA lama)
+ *   J-L  = STATUS GAMAS / STATUS / HASIL UKUR: kolom MANUAL — nilai lama dipertahankan
+ *          lalu DIPINDAH mengikuti NO TIKET (re-key) saat baris di-sort ulang.
+ *          Dilewati bila header J-L bukan nama yang diharapkan ATAU ada formula
+ *          (blok rekap COUNTIFS lama) di sana.
+ * Kolom M ke kanan (NO WA berumus, blok rekap, REPORTING) TIDAK disentuh.
+ * Tidak insert/delete baris.
  */
-function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
+function _tulisBlokMonitoring(cfg, rowsData, colIncident, colSto, colGamas) {
+  if (colGamas === undefined || colGamas === null) colGamas = TTR_SRC_TICKET_ID_GAMAS;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var ws = ss.getSheetByName(TAB_TTR);
+  var ws = ss.getSheetByName(cfg.tab);
   if (!ws) {
-    console.log("[BotInsera] Tab '" + TAB_TTR + "' tidak ditemukan, skip rebuild TTR.");
+    console.log("[BotInsera] Tab '" + cfg.tab + "' tidak ditemukan, skip rebuild " + cfg.label + ".");
     return 0;
   }
+  var startRow = cfg.startRow;
+  var maksBaris = cfg.maksBaris;
+  var nama = cfg.label;
 
-  // Batas blok data: mulai TTR_START_ROW, turun selama kolom B (NO TIKET) diawali "INC".
+  // Batas blok data: mulai startRow, turun selama kolom B (NO TIKET) diawali "INC".
   // Deteksi pakai DUA sumber: (1) nilai sel (sudah menjadi nilai statis) atau
   // (2) RUMUSNYA SENDIRI `='copas tket'!Axx` (masih rumus lama, evaluasinya boleh kosong).
   // Ini membuat rebuild tetap jalan walau rumus lama belum pernah bernilai/tergeser.
   var lastRowT = ws.getLastRow();
-  var scanRows = Math.min(TTR_MAKS_BARIS + TTR_START_ROW - 1, lastRowT) - TTR_START_ROW + 1;
+  var scanRows = Math.min(maksBaris + startRow - 1, lastRowT) - startRow + 1;
   if (scanRows <= 0) { scanRows = 0; }
-  var blokAkhir = TTR_START_ROW - 1;
+  var blokAkhir = startRow - 1;
   var adaBlok = false;
   if (scanRows > 0) {
-    var colBVal = ws.getRange(TTR_START_ROW, 2, scanRows, 1).getValues();
-    var colBFrm = ws.getRange(TTR_START_ROW, 2, scanRows, 1).getFormulas();
+    var colBVal = ws.getRange(startRow, 2, scanRows, 1).getValues();
+    var colBFrm = ws.getRange(startRow, 2, scanRows, 1).getFormulas();
     var scanMasuk = false;
     for (var c0 = 0; c0 < scanRows; c0++) {
       var v0 = colBVal[c0][0];
       var f0 = colBFrm[c0][0] || "";
       var inBlok = (v0 && /^INC/i.test(String(v0))) || /copas tket!A\d+/i.test(f0);
       if (inBlok) {
-        blokAkhir = TTR_START_ROW + c0;
+        blokAkhir = startRow + c0;
         adaBlok = true;
         scanMasuk = true;
       } else if (scanMasuk) {
@@ -669,53 +821,101 @@ function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
       // sebelum blok mulai: tetap lanjut scan (blok boleh mulai lebih turun dari row 3)
     }
   }
-  var kapasitas = Math.max(blokAkhir - TTR_START_ROW + 1, 0);
+  var kapasitas = Math.max(blokAkhir - startRow + 1, 0);
   var count = Math.min(rowsData.length, kapasitas);
 
-  // Bila blok TIDAK terdeteksi padahal ada data tiket: cek area A-G dari TTR_START_ROW
+  // Bila blok TIDAK terdeteksi padahal ada data tiket: cek area A-L dari startRow
   // ke bawah sudah kosong semua (mis. blok pernah dibersihkan / lastRow kecil). Kalau
-  // kosong, jadikan batas blok = sebesar kebutuhan baris (dibatasi TTR_MAKS_BARIS) —
+  // kosong, jadikan batas blok = sebesar kebutuhan baris (dibatasi maksBaris) —
   // TANPA batas lastRow, supaya data tetap muncul walau sheet cuma berisi header.
+  // 12 kolom (A-L): kolom manual J-L IKUT dicek supaya tidak ada nilai manual yang
+  // tertimpa saat blok dibuat/diperluas.
   if (!adaBlok && rowsData.length > 0) {
-    var targetAwal = TTR_START_ROW + Math.min(rowsData.length, TTR_MAKS_BARIS) - 1;
-    if (_cekKosongBlok(ws, TTR_START_ROW, 1, targetAwal - TTR_START_ROW + 1, 7)) {
+    var targetAwal = startRow + Math.min(rowsData.length, maksBaris) - 1;
+    if (_cekKosongBlok(ws, startRow, 1, targetAwal - startRow + 1, 12)) {
       blokAkhir = targetAwal;
       adaBlok = true;
     } else if (scanRows > 0) {
-      blokAkhir = TTR_START_ROW + scanRows - 1; // area terisi lain -> batasi di scan area
+      blokAkhir = startRow + scanRows - 1; // area terisi lain -> batasi di scan area
     } else {
-      console.log("[BotInsera] TTR: blok tak terdeteksi & area A-G baris " +
-                  TTR_START_ROW + "-" + targetAwal + " berisi data lain, skip rebuild.");
+      console.log("[BotInsera] " + nama + ": blok tak terdeteksi & area A-L baris " +
+                  startRow + "-" + targetAwal + " berisi data lain, skip rebuild.");
       return 0;
     }
   }
   // Hitung ulang kapasitas SETELAH blokAkhir (mungkin berubah oleh seed blok di atas).
-  kapasitas = Math.max(blokAkhir - TTR_START_ROW + 1, 0);
+  kapasitas = Math.max(blokAkhir - startRow + 1, 0);
 
   // EKSPANSI BLOK: data tiket bisa lebih banyak dari blok saat ini (blok mengecil
   // karena pernah ditulis kosong saat data sedang sedikit). Perluas blok ke bawah
-  // SELAMA kolom A-G area tujuannya masih kosong (report block hidup di kolom K+,
-  // kolom A-G di bawah blok umumnya kosong). Dibatasi TTR_MAKS_BARIS.
+  // SELAMA area A-L tujuannya masih kosong (kolom M+ di bawah blok umumnya kosong;
+  // kolom manual J-L tidak boleh tertimpa). Dibatasi maksBaris.
   if (rowsData.length > kapasitas) {
-    var targetBawah = Math.min(TTR_START_ROW + rowsData.length - 1,
-                               TTR_MAKS_BARIS + TTR_START_ROW - 1);
+    var targetBawah = Math.min(startRow + rowsData.length - 1,
+                               maksBaris + startRow - 1);
     var perluas = targetBawah - blokAkhir;
     if (perluas > 0) {
-      if (_cekKosongBlok(ws, blokAkhir + 1, 1, perluas, 7)) {
+      if (_cekKosongBlok(ws, blokAkhir + 1, 1, perluas, 12)) {
         blokAkhir = targetBawah;
-        kapasitas = blokAkhir - TTR_START_ROW + 1;
+        kapasitas = blokAkhir - startRow + 1;
         adaBlok = true;
       } else {
-        console.log("[BotInsera] TTR: tak bisa perluas blok, kolom A-G baris " +
+        console.log("[BotInsera] " + nama + ": tak bisa perluas blok, kolom A-L baris " +
                     (blokAkhir + 1) + "-" + targetBawah + " terisi non-kosong.");
       }
     }
   }
   count = Math.min(rowsData.length, kapasitas);
 
-  if (blokAkhir < TTR_START_ROW) {
-    console.log("[BotInsera] TTR: blok data tidak terdeteksi, skip rebuild.");
+  if (blokAkhir < startRow) {
+    console.log("[BotInsera] " + nama + ": blok data tidak terdeteksi, skip rebuild.");
     return 0;
+  }
+
+  // ===== Kolom I (TICKET ID GAMAS) & kolom manual J-L (STATUS GAMAS/STATUS/HASIL UKUR) =====
+  // Dibaca SEBELUM A-G ditulis ulang karena kunci re-key-nya = kolom B lama (NO TIKET).
+  function _h(vHdr) { return String(vHdr === undefined || vHdr === null ? "" : vHdr).trim(); }
+  var hdrIJL = (startRow > 1) ? ws.getRange(startRow - 1, 9, 1, 4).getValues()[0] : [];
+  var hdrI = _h(hdrIJL[0]), hdrJ = _h(hdrIJL[1]), hdrK = _h(hdrIJL[2]), hdrL = _h(hdrIJL[3]);
+  var adaFormula = function (kolom, lebar) {
+    if (kapasitas <= 0) return false;
+    var frm = ws.getRange(startRow, kolom, kapasitas, lebar).getFormulas();
+    for (var fi = 0; fi < frm.length; fi++) {
+      for (var fj = 0; fj < frm[fi].length; fj++) {
+        var fs = frm[fi][fj];
+        if (typeof fs === "string" && fs !== "" && fs.charAt(0) === "=") return true;
+      }
+    }
+    return false;
+  };
+  // I: tulis bila header = "TICKET ID GAMAS", ATAU header kosong & kolom I tanpa formula
+  // (sheet/layout lama yang belum punya header). Jangan sentuh bila header lain
+  // (mis. "NO WA") ATAU kolom I berisi formula (rumus milik user).
+  var isiI = /TICKET\s*ID\s*GAMAS/i.test(hdrI) ||
+             (hdrI === "" && !adaFormula(9, 1));
+  // J-L: hanya bila ketiga header sesuai nama kolom manualnya (deteksi blok rekap lama
+  // yang bergeser / layout tak terkonfirmasi -> jangan ditulis).
+  var isiJKL = /STATUS\s*GAMAS/i.test(hdrJ) && /^STATUS$/i.test(hdrK) && /HASIL\s*UKUR/i.test(hdrL);
+  // Guard: formula di J-L (mis. COUNTIFS blok rekap lama) -> J-L TIDAK ditulis.
+  if (isiJKL && adaFormula(10, 3)) {
+    isiJKL = false;
+    console.log("[BotInsera] " + nama + ": kolom J-L berisi formula (COUNTIFS/rekap?) -> " +
+                "penulisan & re-key J-L dilewati (hanya kolom I).");
+  }
+  var petaManual = {};
+  if (isiJKL && kapasitas > 0) {
+    var colBOld = ws.getRange(startRow, 2, kapasitas, 1).getValues();
+    var jlOld = ws.getRange(startRow, 10, kapasitas, 3).getValues(); // J,K,L
+    for (var mi = 0; mi < kapasitas; mi++) {
+      var keyManual = _h(colBOld[mi][0]).toUpperCase();
+      if (keyManual !== "") {
+        petaManual[keyManual] = [
+          jlOld[mi][0] === undefined || jlOld[mi][0] === null ? "" : jlOld[mi][0],
+          jlOld[mi][1] === undefined || jlOld[mi][1] === null ? "" : jlOld[mi][1],
+          jlOld[mi][2] === undefined || jlOld[mi][2] === null ? "" : jlOld[mi][2]
+        ];
+      }
+    }
   }
 
   var barisTulis = [];
@@ -733,8 +933,41 @@ function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
     ]);
   }
   if (barisTulis.length > 0) {
-    ws.getRange(TTR_START_ROW, 1, barisTulis.length, 7).setValues(barisTulis);
+    ws.getRange(startRow, 1, barisTulis.length, 7).setValues(barisTulis);
   }
+
+  // ===== Tulis kolom I (TICKET ID GAMAS) & re-key kolom manual J-L =====
+  var gamasTulis = 0, jlTulis = 0;
+  if (isiI && kapasitas > 0) {
+    var barisI = [];
+    for (var ii = 0; ii < kapasitas; ii++) {
+      var rowI = (ii < count) ? rowsData[ii] : null;
+      // baris kosong (di luar data) -> kosongkan I; baris data kosong GAMAS -> "-".
+      barisI.push([rowI ? _gamasDariBaris(rowI, colGamas) : ""]);
+    }
+    ws.getRange(startRow, 9, kapasitas, 1).setValues(barisI);
+    gamasTulis = count;
+  }
+  if (isiJKL && kapasitas > 0) {
+    // Nilai J-L lama dipindah mengikuti NO TIKET (re-key), bukan mengikuti posisi baris,
+    // karena urutan baris berubah tiap sync (sort WORKZONE A-Z).
+    var barisJKL = [];
+    for (var ij = 0; ij < kapasitas; ij++) {
+      var rowJ = (ij < count) ? rowsData[ij] : null;
+      var keyJ = rowJ ? _val(rowJ, colIncident).toUpperCase() : "";
+      var m = keyJ ? petaManual[keyJ] : null;
+      barisJKL.push(m ? [m[0], m[1], m[2]] : ["", "", ""]);
+    }
+    ws.getRange(startRow, 10, kapasitas, 3).setValues(barisJKL);
+    jlTulis = kapasitas;
+  }
+
+  // Deteksi pola DURASI dari rumus H yang sudah ada (sebelum restore) supaya tahu
+  // kolom tanggal & sel NOW() yang benar (mentor bisa menggeser kolom -> K$1 jadi $O$1).
+  var polaDurasi = _deteksiPolaDurasi(ws, startRow, kapasitas);
+  // Pastikan sel NOW() acuan rumus DURASI ada — bila kosong, isi =NOW() supaya DURASI
+  // tidak negatif/error. Bila sudah terisi (milik user), TIDAK disentuh.
+  var nowDiisi = _isiSelNow(ws, polaDurasi.refNow);
 
   // Pastikan rumus DURASI (kolom H) ada & valid di tiap baris data.
   // Tulis ulang apabila: H kosong, ATAU nilai H-nya error (mis. #ERROR!/#VALUE!
@@ -742,8 +975,8 @@ function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
   // Ditulis pakai setFormulas sekaligus per-chunk kontigu (lebih cepat dari per-sel).
   var hRestore = 0;
   if (kapasitas > 0) {
-    var hFormulas = ws.getRange(TTR_START_ROW, 8, kapasitas, 1).getFormulas();
-    var hValues = ws.getRange(TTR_START_ROW, 8, kapasitas, 1).getValues();
+    var hFormulas = ws.getRange(startRow, 8, kapasitas, 1).getFormulas();
+    var hValues = ws.getRange(startRow, 8, kapasitas, 1).getValues();
     var indicesRestore = [];
     for (var hi = 0; hi < kapasitas; hi++) {
       var fNow = hFormulas[hi][0] || "";
@@ -753,12 +986,19 @@ function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
       var isError = checkVal.charAt(0) === "#";
       if (fNow === "" || isError) indicesRestore.push(hi);
     }
-    hRestore = _setRumusDurasiBatch(ws, TTR_START_ROW, indicesRestore);
+    hRestore = _setRumusDurasiBatch(ws, startRow, indicesRestore, polaDurasi);
   }
-  console.log("[BotInsera] TTR di-update: data=" + count + " baris (kapasitas blok " + kapasitas +
-              ", scanRows=" + scanRows + ", rentang " + TTR_START_ROW + "-" + blokAkhir +
-              ", H restored=" + hRestore + ")");
+  console.log("[BotInsera] " + nama + " di-update: data=" + count + " baris (kapasitas blok " + kapasitas +
+              ", scanRows=" + scanRows + ", rentang " + startRow + "-" + blokAkhir +
+              ", H restored=" + hRestore + ", GAMAS=" + (isiI ? gamasTulis + " baris" : "dilewati") +
+              ", J-L=" + (isiJKL ? "re-key" : "dilewati") +
+              (nowDiisi ? ", sel NOW(" + polaDurasi.refNow + ") diisi" : "") + ")");
   return count;
+}
+
+// Kompatibilitas: pembacaan lama memakai nama _tulisMonitoringTTR.
+function _tulisMonitoringTTR(rowsData, colIncident, colSto) {
+  return _tulisBlokMonitoring(CFG_TTR, rowsData, colIncident, colSto);
 }
 
 // Baca kolom M 'DATA PS' (1-based: 13) sekali untuk daftar SERVICE NO yang di-flag FFG.
@@ -1058,11 +1298,16 @@ function rebuildSemuaInternal(ffgOnly, mode) {
               ") colIncident=" + colIncident + " colSto=" + colSto);
 
   var hasilTTR = { count: 0, truncated: false };
-  if (!ffgOnly) hasilTTR = _kumpulDanTulisTTR(ws, colIncident, colSto);
+  var hasilWA = { count: 0, truncated: false };
+  if (!ffgOnly) {
+    hasilTTR = _kumpulDanTulisTTR(ws, colIncident, colSto);
+    hasilWA = _kumpulDanTulisWA(ws, colIncident, colSto);
+  }
   var hasilReport = _kumpulDanTulisReport(ws, colIncident, colSto);
   console.log("[BotInsera] rebuild " + mode + " selesai: TTR=" + hasilTTR.count +
-              " report=" + hasilReport.count + (ffgOnly ? " (FFG/REPORT only)" : ""));
-  _catatRebuild(mode, hasilTTR.count, hasilReport.count, null, ffgOnly);
+              " WA=" + hasilWA.count + " report=" + hasilReport.count +
+              (ffgOnly ? " (FFG/REPORT only)" : ""));
+  _catatRebuild(mode, hasilTTR.count, hasilReport.count, null, ffgOnly, hasilWA.count);
 }
 
 // ============ PASANG TRIGGER AUTO-REBUILD (SEKALI SAJA PER SPREADSHEET) ============
@@ -1095,7 +1340,7 @@ function pasangDariMenu() {
     var rincian = pasangTrigger();
     if (ui) ui.alert("BotInsera",
         "Trigger terpasang: " + rincian +
-        "\n\nAuto-rebuild AKTIF:\n- Paste/ubah manual di 'copas tket' atau 'DATA PS' otomatis me-rebuild MONITORING TTR + REPORT JAKUT + REPORT JAKBAR + FFG.\n- Jaring pengaman berkala " + JEDA_TRIGGER_BERKALA_MENIT + " menit (hanya bila data berubah).\n\nStatus auto-rebuild tercatat di tab 'LOG SYNC'.",
+        "\n\nAuto-rebuild AKTIF:\n- Paste/ubah manual di 'copas tket' atau 'DATA PS' otomatis me-rebuild MONITORING TTR + LAPORAN WA + REPORT JAKUT + REPORT JAKBAR + FFG.\n- Jaring pengaman berkala " + JEDA_TRIGGER_BERKALA_MENIT + " menit (hanya bila data berubah).\n\nStatus auto-rebuild tercatat di tab 'LOG SYNC'.",
         ui.ButtonSet.OK);
   } catch (err) {
     if (ui) ui.alert("BotInsera", "Pasang trigger GAGAL: " + err, ui.ButtonSet.OK);
@@ -1118,7 +1363,7 @@ function onOpen() {
   try {
     SpreadsheetApp.getUi()
       .createMenu("BotInsera")
-      .addItem("⟳ Rebuild Semua (TTR + REPORT + FFG)", "rebuildDariMenu")
+      .addItem("⟳ Rebuild Semua (TTR + WA + REPORT + FFG)", "rebuildDariMenu")
       .addItem("⚡ Pasang Auto-Rebuild (onChange + Berkala)", "pasangDariMenu")
       .addItem("Cek Konsistensi Data", "cekData")
       .addToUi();
@@ -1134,7 +1379,7 @@ function rebuildDariMenu() {
   try {
     rebuildSemuaInternal(false, "MANUAL");
     if (ui) ui.alert("BotInsera",
-        "Rebuild selesai.\nTTR & REPORT/FFG diperbarui dari copas tket.", ui.ButtonSet.OK);
+        "Rebuild selesai.\nTTR, LAPORAN WA & REPORT/FFG diperbarui dari copas tket.", ui.ButtonSet.OK);
   } catch (err) {
     if (ui) ui.alert("BotInsera", "Rebuild GAGAL: " + err, ui.ButtonSet.OK);
   }
@@ -1171,8 +1416,13 @@ function cekData() {
       if (set[kunci]) duplikat++; else set[kunci] = true;
     }
 
-    var tabTtr = ss.getSheetByName(TAB_TTR);
-    var ttrRows = _hitungBarisINC(tabTtr, 2, 3);
+    var blokMon = [];
+    for (var mx = 0; mx < CFG_BLOK_MONITORING.length; mx++) {
+      var cfgM = CFG_BLOK_MONITORING[mx];
+      var wsM = ss.getSheetByName(cfgM.tab);
+      blokMon.push(cfgM.label + ": " +
+        (wsM ? _hitungBarisINC(wsM, 2, cfgM.startRow) : "tab tidak ada"));
+    }
     var rincian = [];
     for (var bx = 0; bx < BLOK_REPORT.length; bx++) {
       var cfg = BLOK_REPORT[bx];
@@ -1185,7 +1435,7 @@ function cekData() {
       "• copas tket (INC unik): " + jml +
       "\n• Baris INC kosong: " + kosong +
       "\n• Duplikat INC: " + duplikat +
-      "\n• MONITORING TTR: " + ttrRows +
+      "\n• " + blokMon.join("\n• ") +
       "\n• " + rincian.join("\n• ");
 
     _catatLogSync({ WAKTU: new Date(), VERSI: VERSI, ROWS: jml,
@@ -1213,9 +1463,11 @@ function _hitungBarisINC(ws, kol, startRow) {
 
 // ============ LOG SYNC (RIWAYAT TIAP SYNC) ============
 
+// WA = jumlah baris blok LAPORAN WA (v2.7). Kolom WA sengaja diAKHIRKAN (bukan setelah
+// REPORT) supaya baris log lama (tulis 17 kolom) tetap selaris dengan header baru.
 var KOLOM_LOG = ["WAKTU", "VERSI", "ROWS", "BARU", "UPDATE", "LEWAT", "HAPUS",
                  "TTR", "REPORT", "LENGKAP", "DURASI_MS", "DURASI_REPORT_MS",
-                 "PENYEBAB", "GUARD", "TRUNCATED", "COL_INC", "COL_STO"];
+                 "PENYEBAB", "GUARD", "TRUNCATED", "COL_INC", "COL_STO", "WA"];
 
 function _siapkanTabLog() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1225,7 +1477,18 @@ function _siapkanTabLog() {
     ws.getRange(1, 1, 1, KOLOM_LOG.length).setValues([KOLOM_LOG]);
     ws.getRange(1, 1, 1, KOLOM_LOG.length).setFontWeight("bold");
     try { ws.setFrozenRows(1); } catch (err) { /* ignore */ }
+    return ws;
   }
+  // Tab sudah ada: lengkapi header bila KOLOM_LOG bertambah (mis. kolom WA di v2.7).
+  // Hanya menulis kolom BARU di sebelah kanan -> baris log lama tidak bergeser.
+  try {
+    var lastCol = Math.max(ws.getLastColumn(), 1);
+    if (lastCol < KOLOM_LOG.length) {
+      var tambahan = KOLOM_LOG.slice(lastCol);
+      ws.getRange(1, lastCol + 1, 1, tambahan.length).setValues([tambahan]);
+      ws.getRange(1, 1, 1, KOLOM_LOG.length).setFontWeight("bold");
+    }
+  } catch (err) { /* ignore */ }
   return ws;
 }
 
@@ -1252,7 +1515,8 @@ function _catatLogSync(entry) {
 }
 
 // Catat hasil rebuild manual/otomatis (mode = AUTO / AUTO-FFG / MANUAL).
-function _catatRebuild(mode, ttr, report, err, ffgOnly) {
+// wa = jumlah baris blok LAPORAN WA (opsional; 0 bila tidak dihitung).
+function _catatRebuild(mode, ttr, report, err, ffgOnly, wa) {
   try {
     var pesan = err ? "ERROR: " + err
       : ("REBUILD " + mode + " selesai" + (ffgOnly ? " (FFG/REPORT)" : ""));
@@ -1262,6 +1526,7 @@ function _catatRebuild(mode, ttr, report, err, ffgOnly) {
       ROWS: 0,
       TTR: ttr || 0,
       REPORT: report || 0,
+      WA: wa || 0,
       PENYEBAB: pesan
     });
   } catch (err2) {
